@@ -16,7 +16,7 @@ class MultiServers(private val client: OkHttpClient, private val headers: Header
             .add("X-Inertia", "true")
             .add("X-Inertia-Partial-Component", "files/$type/video")
             .add("X-Inertia-Partial-Data", "streams")
-            .add("X-Inertia-Version", "073aceb6c2dab1e478df72b19687c856")
+            .add("X-Inertia-Version", "852467c2571830b8584cc9bce61b6cde")
             .build()
         val iframe = client.newCall(GET(url, newHeaders)).execute().body.string()
         val urls = mutableListOf<Provider>()
