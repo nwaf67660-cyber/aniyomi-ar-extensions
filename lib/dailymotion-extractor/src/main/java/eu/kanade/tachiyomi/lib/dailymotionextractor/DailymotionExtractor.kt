@@ -33,6 +33,7 @@ class DailymotionExtractor(private val client: OkHttpClient, private val headers
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
+    @OptIn(ExperimentalSerializationApi::class)
     fun videosFromUrl(url: String, prefix: String = "Dailymotion - ", baseUrl: String = "", password: String? = null): List<Video> {
         val htmlString = client.newCall(GET(url)).execute().body.string()
 
@@ -56,6 +57,7 @@ class DailymotionExtractor(private val client: OkHttpClient, private val headers
         }
     }
 
+    @OptIn(ExperimentalSerializationApi::class)
     private fun videosFromProtectedUrl(
         url: String,
         prefix: String,

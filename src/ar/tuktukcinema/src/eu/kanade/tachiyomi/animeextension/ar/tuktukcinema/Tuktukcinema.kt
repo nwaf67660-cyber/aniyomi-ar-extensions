@@ -131,7 +131,6 @@ class Tuktukcinema : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
             val url = it.attr("data-link").substringBefore("0REL0Y").reversed()
             extractVideos(String(Base64.getDecoder().decode(url)), it.text())
         }
-        
     }
     private val doodExtractor by lazy { DoodExtractor(client) }
     private val megaMax by lazy { MegaMaxMultiServer(client, headers) }
@@ -139,7 +138,7 @@ class Tuktukcinema : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     private val streamWishExtractor by lazy { StreamWishExtractor(client, headers) }
     private val vidBomExtractor by lazy { VidBomExtractor(client) }
     private val vidLandExtractor by lazy { VidLandExtractor(client) }
-   
+
     private fun extractVideos(
         url: String,
         server: String,
@@ -176,7 +175,7 @@ class Tuktukcinema : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
             }
 
             "Vidbom" in server || "Vidshare" in server || "Govid" in server -> {
-                val newH = headers.newBuilder().add("Referer", "${baseUrl}/").build()
+                val newH = headers.newBuilder().add("Referer", "$baseUrl/").build()
                 vidBomExtractor.videosFromUrl(url, newH, server)
             }
 
