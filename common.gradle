@@ -54,22 +54,24 @@ android {
                     SOURCESCHEME: split[0],
             ]
         }
-
     }
 
+    // ================================== SIGNING ===========================
     signingConfigs {
         release {
-            storeFile rootProject.file("signingkey.jks")
-            storePassword System.getenv("KEY_STORE_PASSWORD")
-            keyAlias System.getenv("ALIAS")
-            keyPassword System.getenv("KEY_PASSWORD")
+            // تعليق التوقيع لتجنب مشاكل Keytool / GPG
+            // storeFile rootProject.file("signingkey.jks")
+            // storePassword System.getenv("KEY_STORE_PASSWORD")
+            // keyAlias System.getenv("ALIAS")
+            // keyPassword System.getenv("KEY_PASSWORD")
         }
     }
 
     buildTypes {
         release {
-            signingConfig signingConfigs.release
             minifyEnabled false
+            // تعليق التوقيع هنا أيضًا
+            // signingConfig signingConfigs.release
         }
     }
 
@@ -78,7 +80,6 @@ android {
     }
 
     buildFeatures {
-        // Disable unused AGP features
         aidl false
         renderScript false
         resValues false
@@ -98,7 +99,7 @@ android {
 }
 
 dependencies {
-    if (theme != null) implementation(theme) // Overrides core launcher icons
+    if (theme != null) implementation(theme)
     implementation(project(":core"))
     compileOnly(libs.bundles.common)
 }
@@ -130,4 +131,4 @@ tasks.register("writeManifestFile") {
 preBuild.dependsOn(writeManifestFile, lintKotlin)
 if (System.getenv("CI") != "true") {
     lintKotlin.dependsOn(formatKotlin)
-}
+} 
