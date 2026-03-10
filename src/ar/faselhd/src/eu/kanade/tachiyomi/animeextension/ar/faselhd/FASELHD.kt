@@ -53,8 +53,10 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun popularAnimeFromElement(element: Element): SAnime {
         val anime = SAnime.create()
         anime.setUrlWithoutDomain(element.attr("href"))
-        anime.title = element.select("div.imgdiv-class img").attr("alt")
-        anime.thumbnail_url = element.select("div.imgdiv-class img").attr("data-src")
+        anime.title = element.select("div.imgdiv-class img, img").attr("alt")
+        val img = element.selectFirst("div.imgdiv-class img, img")
+        anime.thumbnail_url = img?.attr("data-src").takeUnless { it.isNullOrEmpty() }
+            ?: img?.attr("src")
         return anime
     }
 
@@ -64,7 +66,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun episodeListSelector() = "div.epAll a"
 
     private fun seasonsNextPageSelector(seasonNumber: Int) =
-        "div#seasonList div.col-xl-2:nth-child($seasonNumber)" // "div.List--Seasons--Episodes > a:nth-child($seasonNumber)"
+        "div#seasonList div.col-xl-2:nth-child($seasonNumber)"
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val episodes = mutableListOf<SEpisode>()
@@ -111,7 +113,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     }
 
     // ============================ Video Links =============================
-
     override fun videoListSelector() = throw UnsupportedOperationException()
 
     override fun videoListParse(response: Response): List<Video> {
@@ -139,7 +140,9 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         val anime = SAnime.create()
         anime.setUrlWithoutDomain(element.attr("href"))
         anime.title = element.select("div.imgdiv-class img, img").attr("alt")
-        anime.thumbnail_url = element.select("div.imgdiv-class img, img").attr("data-src")
+        val img = element.selectFirst("div.imgdiv-class img, img")
+        anime.thumbnail_url = img?.attr("data-src").takeUnless { it.isNullOrEmpty() }
+            ?: img?.attr("src")
         return anime
     }
 
@@ -153,7 +156,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         val categoryFilter = filterList.find { it is CategoryFilter } as CategoryFilter
         val genreFilter = filterList.find { it is GenreFilter } as GenreFilter
         return if (query.isNotBlank()) {
-            GET("$baseUrl/page/$page?s=$query", headers)
+            GET("$baseUrl/page/$page?s=${query.replace(" ", "+")}", headers)
         } else {
             val url = "$baseUrl/".toHttpUrlOrNull()!!.newBuilder()
             if (sectionFilter.state != 0) {
@@ -176,7 +179,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         anime.title = document.select("meta[itemprop=name]").attr("content")
         anime.genre = document.select("span:contains(تصنيف) > a, span:contains(مستوى) > a")
             .joinToString(", ") { it.text() }
-        // anime.thumbnail_url = document.select("div.posterImg img.poster").attr("src")
 
         val cover = document.select("div.posterImg img.poster").attr("src")
         anime.thumbnail_url = if (cover.isNullOrEmpty()) {
@@ -207,7 +209,9 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         val anime = SAnime.create()
         anime.setUrlWithoutDomain(element.attr("href"))
         anime.title = element.select("div.imgdiv-class img").attr("alt")
-        anime.thumbnail_url = element.select("div.imgdiv-class img").attr("data-src")
+        val img = element.selectFirst("div.imgdiv-class img")
+        anime.thumbnail_url = img?.attr("data-src").takeUnless { it.isNullOrEmpty() }
+            ?: img?.attr("src")
         return anime
     }
 
@@ -217,7 +221,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun latestUpdatesSelector(): String = "div#postList div.col-xl-2 a"
 
     // ============================ Filters =============================
-
     override fun getFilterList() = AnimeFilterList(
         AnimeFilter.Header("هذا القسم يعمل لو كان البحث فارع"),
         SectionFilter(),
@@ -297,7 +300,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     }
 
     // preferred quality settings
-
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         val videoQualityPref = ListPreference(screen.context).apply {
             key = "preferred_quality"
