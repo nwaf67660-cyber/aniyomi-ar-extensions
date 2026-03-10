@@ -15,7 +15,6 @@ import eu.kanade.tachiyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.lib.synchrony.Deobfuscator
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
-import eu.kanade.tachiyomi.util.parallelCatchingFlatMapBlocking
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
@@ -54,10 +53,10 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun popularAnimeFromElement(element: Element): SAnime {
         val anime = SAnime.create()
         anime.setUrlWithoutDomain(element.attr("href"))
-        element.select("div.imgdiv-class img").let {
-            anime.title = it.attr("alt")
-            anime.thumbnail_url = it.attr("data-src")
-        }
+        anime.title = element.select("div.imgdiv-class img, img").attr("alt")
+        val img = element.selectFirst("div.imgdiv-class img, img")
+        anime.thumbnail_url = img?.attr("data-src").takeUnless { it.isNullOrEmpty() }
+            ?: img?.attr("src")
         return anime
     }
 
@@ -67,7 +66,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun episodeListSelector() = "div.epAll a"
 
     private fun seasonsNextPageSelector(seasonNumber: Int) =
-        "div#seasonList div.col-xl-2:nth-child($seasonNumber)" // "div.List--Seasons--Episodes > a:nth-child($seasonNumber)"
+        "div#seasonList div.col-xl-2:nth-child($seasonNumber)"
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val episodes = mutableListOf<SEpisode>()
@@ -114,21 +113,15 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     }
 
     // ============================ Video Links =============================
-
-    override fun videoListSelector(): String = "li:contains(سيرفر)"
-
-    private val videoRegex by lazy { Regex("""(https?:)?//[^"]+\.m3u8""") }
-    private val onClickRegex by lazy { Regex("""['"](https?://[^'"]+)['"]""") }
+    override fun videoListSelector() = throw UnsupportedOperationException()
 
     override fun videoListParse(response: Response): List<Video> {
-        return response.asJsoup().select(videoListSelector()).parallelCatchingFlatMapBlocking { element ->
-            val url = onClickRegex.find(element.attr("onclick"))?.groupValues?.get(1) ?: ""
-            val doc = client.newCall(GET(url, headers)).execute().asJsoup()
-            val script = doc.selectFirst("script:containsData(video), script:containsData(mainPlayer)")?.data()
-                ?.let(Deobfuscator::deobfuscateScript) ?: ""
-            val playlist = videoRegex.find(script)?.value
-            playlist?.let { playlistUtils.extractFromHls(it) } ?: emptyList()
-        }
+        val document = response.asJsoup()
+        val iframe = document.selectFirst("iframe")!!.attr("src")
+        val iframeDoc = client.newCall(GET(iframe)).execute().asJsoup()
+        val jsScript = iframeDoc.selectFirst("script:containsData(mainPlayer)")!!.data().let(Deobfuscator::deobfuscateScript)!!
+        val playUrl = jsScript.substringAfter("file").substringAfter("'").substringBefore("'")
+        return playlistUtils.extractFromHls(playUrl)
     }
 
     override fun List<Video>.sort(): List<Video> {
@@ -147,7 +140,9 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         val anime = SAnime.create()
         anime.setUrlWithoutDomain(element.attr("href"))
         anime.title = element.select("div.imgdiv-class img, img").attr("alt")
-        anime.thumbnail_url = element.select("div.imgdiv-class img, img").attr("data-src")
+        val img = element.selectFirst("div.imgdiv-class img, img")
+        anime.thumbnail_url = img?.attr("data-src").takeUnless { it.isNullOrEmpty() }
+            ?: img?.attr("src")
         return anime
     }
 
@@ -161,7 +156,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         val categoryFilter = filterList.find { it is CategoryFilter } as CategoryFilter
         val genreFilter = filterList.find { it is GenreFilter } as GenreFilter
         return if (query.isNotBlank()) {
-            GET("$baseUrl/page/$page?s=$query", headers)
+            GET("$baseUrl/page/$page?s=${query.replace(" ", "+")}", headers)
         } else {
             val url = "$baseUrl/".toHttpUrlOrNull()!!.newBuilder()
             if (sectionFilter.state != 0) {
@@ -184,7 +179,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         anime.title = document.select("meta[itemprop=name]").attr("content")
         anime.genre = document.select("span:contains(تصنيف) > a, span:contains(مستوى) > a")
             .joinToString(", ") { it.text() }
-        // anime.thumbnail_url = document.select("div.posterImg img.poster").attr("src")
 
         val cover = document.select("div.posterImg img.poster").attr("src")
         anime.thumbnail_url = if (cover.isNullOrEmpty()) {
@@ -215,7 +209,9 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         val anime = SAnime.create()
         anime.setUrlWithoutDomain(element.attr("href"))
         anime.title = element.select("div.imgdiv-class img").attr("alt")
-        anime.thumbnail_url = element.select("div.imgdiv-class img").attr("data-src")
+        val img = element.selectFirst("div.imgdiv-class img")
+        anime.thumbnail_url = img?.attr("data-src").takeUnless { it.isNullOrEmpty() }
+            ?: img?.attr("src")
         return anime
     }
 
@@ -225,7 +221,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun latestUpdatesSelector(): String = "div#postList div.col-xl-2 a"
 
     // ============================ Filters =============================
-
     override fun getFilterList() = AnimeFilterList(
         AnimeFilter.Header("هذا القسم يعمل لو كان البحث فارع"),
         SectionFilter(),
@@ -305,7 +300,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     }
 
     // preferred quality settings
-
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         val videoQualityPref = ListPreference(screen.context).apply {
             key = "preferred_quality"
