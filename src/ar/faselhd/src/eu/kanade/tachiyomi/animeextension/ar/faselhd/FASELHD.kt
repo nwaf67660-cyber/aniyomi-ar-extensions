@@ -2,7 +2,6 @@ package eu.kanade.tachiyomi.animeextension.ar.faselhd
 
 import android.app.Application
 import android.content.SharedPreferences
-import android.util.Base64
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
@@ -25,11 +24,9 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.util.concurrent.TimeUnit
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
-/**
- * ملحق محسن لموقع فاصل HD - دعم كامل للأنمي والمسلسلات
- */
 class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     override val name = "فاصل HD ✅"
@@ -37,7 +34,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override val lang = "ar"
     override val supportsLatest = true
 
-    // User-Agent محسن لتجنب الحظر
     private val userAgent by lazy {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -48,14 +44,12 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
-    // Constants للـ Selectors لتسهيل الصيانة
     companion object {
         private const val POPULAR_SELECTOR = "div#postList div.col-xl-2 a"
         private const val EPISODE_LIST_SELECTOR = "div.epAll a"
         private const val VIDEO_LIST_SELECTOR = "li:contains(سيرفر)"
         private const val NEXT_PAGE_SELECTOR = "ul.pagination li a.page-link:contains(›)"
         
-        // Regex محسن مع fallback
         private val VIDEO_URL_REGEX = Regex("""https?://[^"\s]+(?:m3u8|mp4)(?:[^\s"]*)?""", RegexOption.IGNORE_CASE)
         private val ONCLICK_URL_REGEX = Regex("""['"](https?://[^'"]+)['"]""")
         private val EPISODE_NUMBER_REGEX = Regex("""الحلقة\s*(\d+(?:\.\d+)?)""")
@@ -66,299 +60,262 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         .add("Referer", baseUrl)
         .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
         .add("Accept-Language", "ar,en-US;q=0.9,en;q=0.8")
-        .add("Accept-Encoding", "gzip, deflate, br")
-        .add("Connection", "keep-alive")
 
     // ============================== Popular ===============================
-    
     override fun popularAnimeSelector() = POPULAR_SELECTOR
-
-    override fun popularAnimeRequest(page: Int): Request {
-        require(page in 1..50) { "الصفحة يجب أن تكون بين 1-50" }
-        return GET("$baseUrl/anime/page/$page", headers)
-    }
-
+    override fun popularAnimeRequest(page: Int): Request = GET("$baseUrl/anime/page/$page", headers)
     override fun popularAnimeFromElement(element: Element): SAnime = parseAnimeFromElement(element)
-
     override fun popularAnimeNextPageSelector() = NEXT_PAGE_SELECTOR
 
     // ============================== Latest ===============================
-    
     override fun latestUpdatesSelector() = POPULAR_SELECTOR
     override fun latestUpdatesNextPageSelector() = NEXT_PAGE_SELECTOR
-    override fun latestUpdatesFromElement(element: Element) = parseAnimeFromElement(element)
-    
-    override fun latestUpdatesRequest(page: Int): Request {
-        require(page in 1..50) { "الصفحة يجب أن تكون بين 1-50" }
-        return GET("$baseUrl/most_recent/page/$page", headers)
-    }
+    override fun latestUpdatesFromElement(element: Element): SAnime = parseAnimeFromElement(element)
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/most_recent/page/$page", headers)
 
     // ============================== Search ===============================
-    
     override fun searchAnimeSelector() = POPULAR_SELECTOR
     override fun searchAnimeNextPageSelector() = NEXT_PAGE_SELECTOR
-
-    override fun searchAnimeFromElement(element: Element) = parseAnimeFromElement(element)
+    override fun searchAnimeFromElement(element: Element): SAnime = parseAnimeFromElement(element)
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        return when {
-            query.isNotBlank() -> {
-                require(page in 1..20) { "الصفحة يجب أن تكون بين 1-20" }
-                GET("$baseUrl/page/$page?s=${query.trim().urlEncode()}", headers)
-            }
-            else -> buildFilterRequest(page, filters)
+        return if (query.isNotBlank()) {
+            GET("$baseUrl/page/$page?s=${URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.toString())}", headers)
+        } else {
+            buildFilterRequest(page, filters)
         }
     }
 
     // ============================== Episodes ==============================
-    
     override fun episodeListSelector() = EPISODE_LIST_SELECTOR
 
     override fun episodeListParse(response: Response): List<SEpisode> {
-        val document = response.asJsoup()
         return try {
-            parseEpisodesRecursively(document)
+            parseEpisodes(response.asJsoup())
         } catch (e: Exception) {
-            document.select(EPISODE_LIST_SELECTOR).mapNotNull { episodeFromElementSafe(it) }
+            response.asJsoup().select(EPISODE_LIST_SELECTOR).mapNotNull { safeEpisodeFromElement(it) }
         }
     }
 
-    private fun parseEpisodesRecursively(document: Document, seasonNumber: Int = 1): List<SEpisode> {
+    private fun parseEpisodes(document: Document): List<SEpisode> {
         val episodes = mutableListOf<SEpisode>()
-        
-        // الحلقات المباشرة
-        document.select(EPISODE_LIST_SELECTOR).mapNotNullTo(episodes) { episodeFromElementSafe(it) }
-        
-        // حلقات shortLink كبديل
+        var seasonNumber = 1
+
+        fun extractEpisode(element: Element): SEpisode? = safeEpisodeFromElement(element)
+
+        // الحلقات الحالية
+        document.select(EPISODE_LIST_SELECTOR).mapNotNullTo(episodes) { extractEpisode(it) }
+
+        // Short links كبديل
         if (episodes.isEmpty()) {
-            document.select("div.shortLink").mapNotNullTo(episodes) { parseShortLinkEpisode(it) }
-        }
-        
-        // الموسم التالي
-        val nextSeasonSelector = "div#seasonList div.col-xl-2:nth-child($seasonNumber)"
-        document.selectFirst(nextSeasonSelector)?.let { seasonElement ->
-            val nextSeasonUrl = extractSeasonUrl(seasonElement)
-            if (nextSeasonUrl.isNotBlank()) {
-                try {
-                    val nextDoc = client.newCall(GET("$baseUrl/?p=$nextSeasonUrl", headers))
-                        .execute()
-                        .use { it.asJsoup() }
-                    episodes += parseEpisodesRecursively(nextDoc, seasonNumber + 1)
-                } catch (e: Exception) {
-                    // تجاهل أخطاء المواسم اللاحقة
-                }
+            document.select("div.shortLink").mapNotNullTo(episodes) { 
+                val ep = SEpisode.create()
+                ep.setUrlWithoutDomain(it.select("span#liskSh").text().trim())
+                ep.name = "مشاهدة الحلقة"
+                ep
             }
         }
-        
+
+        // المواسم التالية
+        while (true) {
+            val nextSeasonSelector = "div#seasonList div.col-xl-2:nth-child($seasonNumber)"
+            val seasonElement = document.selectFirst(nextSeasonSelector) ?: break
+            
+            val seasonUrl = seasonElement.select("div.seasonDiv")
+                .attr("onclick")
+                .let { onclick -> 
+                    onclick.substringAfterLast("=").substringBeforeLast("'").trim() 
+                }
+            
+            if (seasonUrl.isBlank()) break
+
+            try {
+                val nextDoc = client.newCall(GET("$baseUrl/?p=$seasonUrl", headers))
+                    .execute().use { it.asJsoup() }
+                nextDoc.select(EPISODE_LIST_SELECTOR).mapNotNullTo(episodes) { extractEpisode(it) }
+                seasonNumber++
+            } catch (e: Exception) {
+                break
+            }
+        }
+
         return episodes.reversed()
     }
 
-    private fun episodeFromElementSafe(element: Element): SEpisode? = try {
-        episodeFromElement(element)
+    private fun safeEpisodeFromElement(element: Element): SEpisode? = try {
+        val episode = SEpisode.create()
+        episode.setUrlWithoutDomain(
+            element.attr("abs:href").ifBlank { element.attr("href") }
+        )
+        
+        val doc = element.ownerDocument()
+        val seasonTitle = doc?.select("div.seasonDiv.active > div.title")?.text() ?: "الموسم"
+        val epTitle = element.text().trim()
+        
+        episode.name = "$seasonTitle : $epTitle"
+        
+        EPISODE_NUMBER_REGEX.find(epTitle)?.groupValues?.getOrNull(0)
+            ?.toFloatOrNull()?.let { episode.episode_number = it }
+        
+        episode
     } catch (e: Exception) {
         null
     }
 
-    override fun episodeFromElement(element: Element): SEpisode {
-        val episode = SEpisode.create()
-        episode.setUrlWithoutDomain(element.attr("abs:href").takeIf { it.isNotBlank() }
-            ?: element.attr("href"))
-        
-        val titleElement = element.ownerDocument()?.select("div.seasonDiv.active > div.title")
-        val seasonTitle = titleElement?.text()?.takeIf { it.isNotBlank() } ?: "الموسم"
-        val episodeTitle = element.text().trim()
-        
-        episode.name = "$seasonTitle : $episodeTitle"
-        
-        // استخراج رقم الحلقة بأمان
-        EPISODE_NUMBER_REGEX.find(episodeTitle)?.groupValues?.firstOrNull()?.toFloatOrNull()
-            ?.let { episode.episode_number = it }
-        
-        return episode
-    }
-
-    private fun parseShortLinkEpisode(element: Element): SEpisode {
-        val episode = SEpisode.create()
-        episode.setUrlWithoutDomain(element.select("span#liskSh").text().trim())
-        episode.name = "مشاهدة الحلقة"
-        return episode
-    }
-
-    private fun extractSeasonUrl(element: Element): String {
-        return element.select("div.seasonDiv")
-            .attr("onclick")
-            .substringAfterLast("=")
-            .substringBeforeLast("'")
-            .trim()
-            .takeIf { it.isNotBlank() } ?: ""
-    }
-
     // ============================ Video Links =============================
-
     override fun videoListSelector() = VIDEO_LIST_SELECTOR
 
     override fun videoListParse(response: Response): List<Video> {
         return response.asJsoup()
             .select(videoListSelector())
             .parallelCatchingFlatMapBlocking { element ->
-                extractVideosFromServer(element)
+                try {
+                    val onclickUrl = ONCLICK_URL_REGEX.find(element.attr("onclick"))?.value ?: return@parallelCatchingFlatMapBlocking emptyList()
+                    
+                    client.newCall(GET(onclickUrl, headers)).execute().use { resp ->
+                        if (!resp.isSuccessful) return@parallelCatchingFlatMapBlocking emptyList()
+                        
+                        val doc = resp.asJsoup()
+                        val script = doc.selectFirst("script:containsData(video), script:containsData(mainPlayer)")
+                            ?.data()?.let(Deobfuscator::deobfuscateScript) ?: ""
+                        
+                        VIDEO_URL_REGEX.findAll(script)
+                            .mapNotNull { urlMatch ->
+                                try {
+                                    playlistUtils.extractFromHls(urlMatch.value).firstOrNull()
+                                } catch (e: Exception) {
+                                    null
+                                }
+                            }
+                            .toList()
+                    }
+                } catch (e: Exception) {
+                    emptyList()
+                }
             }
             .sorted()
     }
 
-    private fun extractVideosFromServer(element: Element): List<Video> {
-        return try {
-            val serverUrl = ONCLICK_URL_REGEX.find(element.attr("onclick"))?.value
-                ?: return emptyList()
-            
-            client.newCall(GET(serverUrl, headers)).execute().use { response ->
-                if (!response.isSuccessful) return emptyList()
-                
-                val doc = response.asJsoup()
-                val scriptContent = doc.selectFirst("script:containsData(video), script:containsData(mainPlayer)")
-                    ?.data()?.let(Deobfuscator::deobfuscateScript) ?: ""
-                
-                VIDEO_URL_REGEX.findAll(scriptContent)
-                    .mapNotNull { extractVideoFromUrl(it.value) }
-                    .toList()
-            }
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun extractVideoFromUrl(url: String): Video? {
-        return try {
-            val videos = playlistUtils.extractFromHls(url)
-            videos.firstOrNull()?.copy(quality = normalizeQuality(videos.first().quality))
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     override fun List<Video>.sort(): List<Video> {
-        val preferredQuality = preferences.getString("preferred_quality", "1080") ?: "1080"
+        val preferred = preferences.getString("preferred_quality", "1080") ?: "1080"
         return sortedWith(
-            compareByDescending<Video> { it.quality.contains(preferredQuality, ignoreCase = true) }
-                .thenByDescending { parseQualityNumber(it.quality) }
+            compareByDescending<Video> { it.quality.contains(preferred, ignoreCase = true) }
+                .thenByDescending { it.quality.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0 }
         )
     }
 
-    private fun normalizeQuality(quality: String) = quality.trim()
-        .replace(Regex("[^0-9]"), "")
-        .takeIf { it.isNotBlank() && it.toIntOrNull() != null }
-        ?: "720"
-
-    private fun parseQualityNumber(quality: String): Int {
-        return quality.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0
-    }
-
     // =========================== Anime Details ============================
-
     override fun animeDetailsParse(document: Document): SAnime {
         val anime = SAnime.create()
         
-        // العنوان
         anime.title = document.selectFirst("meta[itemprop=name]")?.attr("content")
             ?: document.selectFirst("h1")?.text() ?: "عنوان غير معروف"
         
-        // الصورة المصغرة
-        anime.thumbnail_url = selectThumbnail(document)
+        anime.thumbnail_url = document.select("div.posterImg img.poster").attr("src").ifBlank {
+            document.select("div.col-xl-2 > div.seasonDiv:nth-child(1) > img").attr("data-src")
+        }
         
-        // التصنيفات
         anime.genre = document.select("span:contains(تصنيف) > a, span:contains(مستوى) > a")
-            .mapNotNull { it.text().trim().takeIf { it.isNotBlank() } }
-            .distinct()
-            .joinToString(", ")
+            .joinToString(", ") { it.text().trim() }
         
-        // الوصف
-        anime.description = document.select("div.singleDesc").text()
-            .takeIf { it.isNotBlank() } ?: "لا يوجد وصف"
+        anime.description = document.select("div.singleDesc").text().ifBlank { "لا يوجد وصف" }
         
-        // الحالة
-        anime.status = parseStatus(document.select("span:contains(حالة)").text())
+        val statusText = document.select("span:contains(حالة)").text()
+            .replace("حالة ", "").replace("المسلسل : ", "").trim()
+        anime.status = when {
+            statusText.contains("مستمر", ignoreCase = true) -> SAnime.ONGOING
+            statusText.contains("مكتمل", ignoreCase = true) -> SAnime.COMPLETED
+            else -> SAnime.UNKNOWN
+        }
         
         return anime
     }
 
-    private fun selectThumbnail(document: Document): String {
-        return document.select("div.posterImg img.poster").attr("src").takeIf { it.isNotBlank() }
-            ?: document.select("div.col-xl-2 > div.seasonDiv:nth-child(1) > img").attr("data-src")
-            ?: document.select("img[alt*='poster'], img.poster").attr("src")
-            ?: ""
-    }
-
-    private fun parseStatus(statusText: String): Int {
-        val cleanStatus = statusText.replace("حالة ", "").replace("المسلسل : ", "").trim()
-        return when {
-            cleanStatus.contains("مستمر", ignoreCase = true) -> SAnime.ONGOING
-            cleanStatus.contains("مكتمل", ignoreCase = true) -> SAnime.COMPLETED
-            else -> SAnime.UNKNOWN
-        }
-    }
-
     // ============================ Filters =============================
-
-    override fun getFilterList() = AnimeFilterList(
-        AnimeFilter.Header("🔍 البحث بالكلمات أو الفلاتر"),
+    override fun getFilterList(): AnimeFilterList = AnimeFilterList(
+        AnimeFilter.Header("🔍 استخدم الفلاتر أو البحث بالكلمات"),
         SectionFilter(),
         AnimeFilter.Separator(),
-        AnimeFilter.Header("⚙️ الفلاتر تعمل فقط بدون كلمات بحث"),
         CategoryFilter(),
         GenreFilter(),
     )
 
-    // ... باقي الفلاتر كما هي مع تحسينات طفيفة ...
-
     private fun buildFilterRequest(page: Int, filters: AnimeFilterList): Request {
-        val filterList = if (filters.isEmpty()) getFilterList() else filters
-        val sectionFilter = filterList.find { it is SectionFilter } as? SectionFilter
-        val categoryFilter = filterList.find { it is CategoryFilter } as? CategoryFilter
-        val genreFilter = filterList.find { it is GenreFilter } as? GenreFilter
-
-        require(!(sectionFilter?.state == 0 && categoryFilter?.state == 0)) {
-            "من فضلك اختر قسم أو نوع"
-        }
-
-        return baseUrl.toHttpUrlOrNull()!!.newBuilder()
-            .apply {
-                if (sectionFilter?.state != 0) {
-                    addPathSegment(sectionFilter.toUriPart())
-                } else if (categoryFilter?.state != 0) {
-                    addPathSegment(categoryFilter.toUriPart())
-                    genreFilter?.let { addPathSegment(it.toUriPart().lowercase()) }
-                }
-            }
+        val sectionFilter = filters.find { it is SectionFilter } as? SectionFilter
+            ?: throw Exception("اختر قسم")
+        
+        val url = baseUrl.toHttpUrlOrNull()!!.newBuilder()
+            .addPathSegment(sectionFilter.state.let { SectionFilter.options[it].second })
             .addPathSegment("page")
             .addPathSegment("$page")
-            .build()
-            .let { GET(it.toString(), headers) }
+            .toString()
+        
+        return GET(url, headers)
     }
 
     private fun parseAnimeFromElement(element: Element): SAnime {
         val anime = SAnime.create()
         anime.setUrlWithoutDomain(element.attr("href"))
         
-        val imgElement = element.select("div.imgdiv-class img").firstOrNull()
-            ?: element.select("img").firstOrNull()
-        
-        anime.title = imgElement?.attr("alt") ?: "عنوان غير معروف"
-        anime.thumbnail_url = imgElement?.attr("data-src") 
-            ?: imgElement?.attr("src") ?: ""
+        val img = element.select("div.imgdiv-class img").firstOrNull() ?: element.select("img").firstOrNull()
+        anime.title = img?.attr("alt") ?: "عنوان غير معروف"
+        anime.thumbnail_url = img?.attr("data-src") ?: img?.attr("src") ?: ""
         
         return anime
     }
 
-    private fun String.urlEncode() = java.net.URLEncoder.encode(this, "UTF-8")
+    // ==================== Filters Implementation ====================
+    private class SectionFilter : AnimeFilter.Select<String>(
+        "الأقسام",
+        arrayOf(
+            "جميع الأنمي", "الأنمي الجديد", "الأنمي الشائع",
+            "الأنمي المستمر", "الأنمي المكتمل"
+        )
+    ) {
+        companion object {
+            val options = arrayOf(
+                "none", "anime-new", "anime-popular", "anime-ongoing", "anime-completed"
+            )
+        }
+        fun toUriPart() = options[state]
+    }
+
+    private class CategoryFilter : AnimeFilter.Select<String>(
+        "النوع",
+        arrayOf("الأنمي", "الأفلام", "المسلسلات")
+    ) {
+        fun toUriPart() = when (state) {
+            0 -> "anime"
+            1 -> "movies"
+            2 -> "series"
+            else -> "anime"
+        }
+    }
+
+    private class GenreFilter : AnimeFilter.Select<String>(
+        "التصنيف",
+        arrayOf("Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Romance", "Sci-Fi")
+    ) {
+        fun toUriPart() = when (state) {
+            0 -> "action"
+            1 -> "adventure"
+            2 -> "comedy"
+            3 -> "drama"
+            4 -> "fantasy"
+            5 -> "horror"
+            6 -> "romance"
+            7 -> "scifi"
+            else -> "action"
+        }
+    }
 
     // ============================ Preferences ============================
-
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         ListPreference(screen.context).apply {
             key = "preferred_quality"
-            title = "🎥 جودة الفيديو المفضلة"
-            entries = arrayOf("أفضل جودة", "1080p", "720p", "480p", "360p")
-            entryValues = arrayOf("auto", "1080", "720", "480", "360")
+            title = "🎥 الجودة المفضلة"
+            entries = arrayOf("أعلى جودة", "1080p", "720p", "480p", "360p")
+            entryValues = arrayOf("1080", "1080", "720", "480", "360")
             setDefaultValue("1080")
             summary = "الحالي: %s"
 
