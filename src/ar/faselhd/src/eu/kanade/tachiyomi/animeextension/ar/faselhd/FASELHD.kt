@@ -7,6 +7,7 @@ import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
+import eu.kanade.tachiyomi.animesource.model.AnimeFilter.Select
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
@@ -41,6 +42,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         const val VIDEO_LIST_SELECTOR = "li:contains(سيرفر)"
         const val NEXT_PAGE_SELECTOR = "ul.pagination li a.page-link:contains(›)"
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        const val PREFERRED_QUALITY_KEY = "preferred_quality"
         
         private val VIDEO_URL_REGEX = Regex("""https?://[^"\s]+(?:m3u8|mp4)(?:[^\s"]*)?""", RegexOption.IGNORE_CASE)
         private val ONCLICK_URL_REGEX = Regex("""['"](https?://[^'"]+)['"]""")
@@ -57,11 +59,14 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
-    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
-        .add("User-Agent", USER_AGENT)
-        .add("Referer", baseUrl)
-        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-        .add("Accept-Language", "ar,en-US;q=0.9,en;q=0.8")
+    override val headers by lazy {
+        super.headersBuilder()
+            .add("User-Agent", USER_AGENT)
+            .add("Referer", "$baseUrl/")
+            .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .add("Accept-Language", "ar,en-US;q=0.9,en;q=0.8")
+            .build()
+    }
 
     // ============================== Popular ===============================
     override fun popularAnimeSelector(): String = POPULAR_SELECTOR
@@ -178,7 +183,8 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     }
 
     private fun extractVideosFromElement(element: Element): List<Video> = try {
-        val serverUrl = ONCLICK_URL_REGEX.find(element.attr("onclick"))?.value ?: return emptyList()
+        val onclickAttr = element.attr("onclick")
+        val serverUrl = ONCLICK_URL_REGEX.find(onclickAttr)?.value ?: return emptyList()
 
         client.newCall(GET(serverUrl, headers)).execute().use { response ->
             if (!response.isSuccessful) return emptyList()
@@ -188,9 +194,9 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
                 ?.data()?.let(Deobfuscator::deobfuscateScript) ?: return emptyList()
 
             VIDEO_URL_REGEX.findAll(scriptContent)
-                .mapNotNull { match -> 
+                .mapNotNull { matchResult -> 
                     try {
-                        playlistUtils.extractFromHls(match.value).firstOrNull()
+                        playlistUtils.extractFromHls(matchResult.value).firstOrNull()
                     } catch (e: Exception) {
                         null
                     }
@@ -295,10 +301,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     )
 
     // ============================ Preferences ============================
-    companion object {
-        private const val PREFERRED_QUALITY_KEY = "preferred_quality"
-    }
-
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         ListPreference(screen.context).apply {
             key = PREFERRED_QUALITY_KEY
