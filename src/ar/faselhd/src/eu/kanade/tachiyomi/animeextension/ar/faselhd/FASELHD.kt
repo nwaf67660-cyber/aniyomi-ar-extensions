@@ -16,7 +16,6 @@ import eu.kanade.tachiyomi.lib.synchrony.Deobfuscator
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.util.asJsoup
 import eu.kanade.tachiyomi.util.parallelCatchingFlatMapBlocking
-import okhttp3.CacheControl
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
@@ -30,8 +29,11 @@ import java.util.concurrent.TimeUnit
 class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     override val name = "فاصل اعلاني"
+
     override val baseUrl = "https://www.faselhd.pro"
+
     override val lang = "ar"
+
     override val supportsLatest = true
 
     private val preferences: SharedPreferences by lazy {
@@ -40,86 +42,47 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
-    
-    // Cloudflare bypass headers
-    private val cfHeaders = Headers.Builder()
-        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
-        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-        .add("Accept-Language", "ar,en;q=0.9,en-US;q=0.8")
-        .add("Accept-Encoding", "gzip, deflate, br")
-        .add("DNT", "1")
-        .add("Connection", "keep-alive")
-        .add("Upgrade-Insecure-Requests", "1")
-        .add("Sec-Fetch-Dest", "document")
-        .add("Sec-Fetch-Mode", "navigate")
-        .add("Sec-Fetch-Site", "none")
-        .add("Sec-Fetch-User", "?1")
-        .add("Referer", baseUrl)
-        .build()
+    // User-Agent كما هو بالضبط
+    private val userAgent = "Mozilla/5.0 (Windows NT 10.0;Win64;x64;rv:136.0)Gecko"
 
     override fun headersBuilder(): Headers.Builder {
         return super.headersBuilder()
-            .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+            .add("User-Agent", userAgent)
             .add("Referer", baseUrl)
-            .add("Accept-Language", "ar,en;q=0.9")
+            .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+            .add("Accept-Language", "ar,en-US;q=0.7,en;q=0.3")
+            .add("Accept-Encoding", "gzip, deflate, br")
+            .add("DNT", "1")
+            .add("Connection", "keep-alive")
+            .add("Upgrade-Insecure-Requests", "1")
+            .add("Sec-Fetch-Dest", "document")
+            .add("Sec-Fetch-Mode", "navigate")
+            .add("Sec-Fetch-Site", "none")
+            .add("Sec-Fetch-User", "?1")
+            .add("Cache-Control", "max-age=0")
     }
 
-    
-    // Create request without cache
-    private fun createNoCacheRequest(url: String): Request {
-        val cacheControl = CacheControl.Builder()
-            .noCache()
-            .noStore()
-            .maxAge(0, TimeUnit.SECONDS)
-            .build()
+    // إعدادات Client لتجاوز Cloudflare
+    override fun createClient() = super.createClient().newBuilder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
 
-        return GET(url, cfHeaders).newBuilder()
-            .cacheControl(cacheControl)
-            .build()
-    }
-
-    
-    // Bypass Cloudflare protection
-    private fun bypassCloudflare(url: String): Document? {
-        return try {
-            val initialResponse = client.newCall(createNoCacheRequest(url)).execute()
-            val initialDoc = initialResponse.asJsoup()
-            
-            if (initialDoc.select("title").any { 
-                it.text().contains("Checking your browser") || 
-                it.text().contains("Just a moment") || 
-                it.text().contains("cloudflare")
-            }) {
-                Thread.sleep(4000)
-                
-                val retryHeaders = cfHeaders.newBuilder()
-                    .add("Sec-CH-UA", "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"121\", \"Google Chrome\";v=\"121\"")
-                    .add("Sec-CH-UA-Mobile", "?0")
-                    .add("Sec-CH-UA-Platform", "\"Windows\"")
-                    .build()
-                
-                val retryRequest = createNoCacheRequest(url).newBuilder()
-                    .headers(retryHeaders)
-                    .build()
-                
-                val retryResponse = client.newCall(retryRequest).execute()
-                if (retryResponse.isSuccessful) {
-                    retryResponse.asJsoup()
-                } else {
-                    initialDoc
-                }
-            } else {
-                initialDoc
-            }
-        } catch (e: Exception) {
-            client.newCall(createNoCacheRequest(url)).execute().asJsoup()
-        }
+    // دالة للانتظار قبل الطلبات لتجنب الحظر
+    private fun delayRequest() {
+        Thread.sleep(2000 + (Math.random() * 1000).toLong())
     }
 
     // ============================== Popular ===============================
     override fun popularAnimeSelector(): String = "div#postList div.col-xl-2 a"
 
-    override fun popularAnimeRequest(page: Int): Request = createNoCacheRequest("$baseUrl/anime/page/$page")
+    override fun popularAnimeRequest(page: Int): Request {
+        delayRequest()
+        return GET("$baseUrl/anime/page/$page", headers)
+    }
 
     override fun popularAnimeFromElement(element: Element): SAnime {
         val anime = SAnime.create()
@@ -136,13 +99,13 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     // ============================== Episodes ==============================
     override fun episodeListSelector() = "div.epAll a"
 
-    private fun seasonsNextPageSelector(seasonNumber: Int) = "div#seasonList div.col-xl-2:nth-child($seasonNumber)"
+    private fun seasonsNextPageSelector(seasonNumber: Int) =
+        "div#seasonList div.col-xl-2:nth-child($seasonNumber)"
 
     override fun episodeListParse(response: Response): List<SEpisode> {
-        val document = bypassCloudflare(response.request.url.toString()) ?: response.asJsoup()
+        delayRequest()
         val episodes = mutableListOf<SEpisode>()
         var seasonNumber = 1
-        
         fun episodeExtract(element: Element): SEpisode {
             val episode = SEpisode.create()
             episode.setUrlWithoutDomain(element.select("span#liskSh").text())
@@ -150,23 +113,25 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
             return episode
         }
 
-        fun addEpisodes(doc: Document) {
-            if (doc.select(episodeListSelector()).isNullOrEmpty()) {
-                doc.select("div.shortLink").map { episodes.add(episodeExtract(it)) }
+        fun addEpisodes(document: Document) {
+            if (document.select(episodeListSelector()).isNullOrEmpty()) {
+                document.select("div.shortLink").map { episodes.add(episodeExtract(it)) }
             } else {
-                doc.select(episodeListSelector()).map { episodes.add(episodeFromElement(it)) }
-                doc.selectFirst(seasonsNextPageSelector(seasonNumber))?.let {
+                document.select(episodeListSelector()).map { episodes.add(episodeFromElement(it)) }
+                document.selectFirst(seasonsNextPageSelector(seasonNumber))?.let {
                     seasonNumber++
-                    val seasonUrl = "$baseUrl/?p=" + it.select("div.seasonDiv")
-                        .attr("onclick").substringAfterLast("=").substringBeforeLast("'")
-                    val seasonDoc = bypassCloudflare(seasonUrl) ?: 
-                        client.newCall(createNoCacheRequest(seasonUrl)).execute().asJsoup()
-                    addEpisodes(seasonDoc)
+                    val nextUrl = "$baseUrl/?p=" + it.select("div.seasonDiv")
+                        .attr("onclick").substringAfterLast("=")
+                        .substringBeforeLast("'")
+                    delayRequest()
+                    addEpisodes(
+                        client.newCall(GET(nextUrl, headers)).execute().asJsoup()
+                    )
                 }
             }
         }
 
-        addEpisodes(document)
+        addEpisodes(response.asJsoup())
         return episodes.reversed()
     }
 
@@ -186,21 +151,29 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     private val onClickRegex by lazy { Regex("""['"](https?://[^'"]+)['"]""") }
 
     override fun videoListParse(response: Response): List<Video> {
-        val document = bypassCloudflare(response.request.url.toString()) ?: response.asJsoup()
-        return document.select(videoListSelector()).parallelCatchingFlatMapBlocking { element ->
-            val url = onClickRegex.find(element.attr("onclick"))?.groupValues?.get(1) ?: ""
-            val videoDoc = bypassCloudflare(url) ?: 
-                client.newCall(createNoCacheRequest(url)).execute().asJsoup()
-            val script = videoDoc.selectFirst("script:containsData(video), script:containsData(mainPlayer)")?.data()
-                ?.let(Deobfuscator::deobfuscateScript) ?: ""
-            val playlist = videoRegex.find(script)?.value
-            playlist?.let { playlistUtils.extractFromHls(it) } ?: emptyList()
+        delayRequest()
+        return response.asJsoup().select(videoListSelector()).parallelCatchingFlatMapBlocking { element ->
+            try {
+                val url = onClickRegex.find(element.attr("onclick"))?.groupValues?.get(1) ?: ""
+                if (url.isEmpty()) return@parallelCatchingFlatMapBlocking emptyList()
+                
+                delayRequest()
+                val doc = client.newCall(GET(url, headers)).execute().asJsoup()
+                val script = doc.selectFirst("script:containsData(video), script:containsData(mainPlayer)")?.data()
+                    ?.let(Deobfuscator::deobfuscateScript) ?: ""
+                val playlist = videoRegex.find(script)?.value
+                playlist?.let { playlistUtils.extractFromHls(it) } ?: emptyList()
+            } catch (e: Exception) {
+                emptyList()
+            }
         }
     }
 
     override fun List<Video>.sort(): List<Video> {
         val quality = preferences.getString("preferred_quality", "1080")!!
-        return sortedWith(compareBy { it.quality.contains(quality) }).reversed()
+        return sortedWith(
+            compareBy { it.quality.contains(quality) },
+        ).reversed()
     }
 
     override fun videoFromElement(element: Element) = throw UnsupportedOperationException()
@@ -216,16 +189,17 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     }
 
     override fun searchAnimeNextPageSelector(): String = "ul.pagination li a.page-link:contains(›)"
+
     override fun searchAnimeSelector(): String = "div#postList div.col-xl-2 a"
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
+        delayRequest()
         val filterList = if (filters.isEmpty()) getFilterList() else filters
         val sectionFilter = filterList.find { it is SectionFilter } as SectionFilter
         val categoryFilter = filterList.find { it is CategoryFilter } as CategoryFilter
         val genreFilter = filterList.find { it is GenreFilter } as GenreFilter
-        
         return if (query.isNotBlank()) {
-            createNoCacheRequest("$baseUrl/page/$page?s=$query")
+            GET("$baseUrl/page/$page?s=$query", headers)
         } else {
             val url = "$baseUrl/".toHttpUrlOrNull()!!.newBuilder()
             if (sectionFilter.state != 0) {
@@ -238,7 +212,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
             }
             url.addPathSegment("page")
             url.addPathSegment("$page")
-            createNoCacheRequest(url.toString())
+            GET(url.toString(), headers)
         }
     }
 
@@ -257,18 +231,22 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         }
         anime.description = document.select("div.singleDesc").text()
         anime.status = parseStatus(
-            document.select("span:contains(حالة)").text().replace("حالة ", "").replace("المسلسل : ", "")
+            document.select("span:contains(حالة)").text().replace("حالة ", "")
+                .replace("المسلسل : ", ""),
         )
         return anime
     }
 
-    private fun parseStatus(statusString: String): Int = when (statusString) {
-        "مستمر" -> SAnime.ONGOING
-        else -> SAnime.COMPLETED
+    private fun parseStatus(statusString: String): Int {
+        return when (statusString) {
+            "مستمر" -> SAnime.ONGOING
+            else -> SAnime.COMPLETED
+        }
     }
 
     // =============================== Latest ===============================
-    override fun latestUpdatesNextPageSelector(): String = "ul.pagination li a.page-link:contains(›)"
+    override fun latestUpdatesNextPageSelector(): String =
+        "ul.pagination li a.page-link:contains(›)"
 
     override fun latestUpdatesFromElement(element: Element): SAnime {
         val anime = SAnime.create()
@@ -278,15 +256,19 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         return anime
     }
 
-    override fun latestUpdatesRequest(page: Int): Request = createNoCacheRequest("$baseUrl/most_recent/page/$page")
+    override fun latestUpdatesRequest(page: Int): Request {
+        delayRequest()
+        return GET("$baseUrl/most_recent/page/$page", headers)
+    }
+
     override fun latestUpdatesSelector(): String = "div#postList div.col-xl-2 a"
 
     // ============================ Filters =============================
     override fun getFilterList() = AnimeFilterList(
-        AnimeFilter.Header("هذا القسم يعمل لو كان البحث فارغ"),
+        AnimeFilter.Header("هذا القسم يعمل لو كان البحث فارع"),
         SectionFilter(),
         AnimeFilter.Separator(),
-        AnimeFilter.Header("الفلترة تعمل فقط لو كان اقسام الموقع على 'اختر'"),
+        AnimeFilter.Header("الفلتره تعمل فقط لو كان اقسام الموقع على 'اختر'"),
         CategoryFilter(),
         GenreFilter(),
     )
@@ -330,9 +312,23 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     private class GenreFilter : SingleFilter(
         "التصنيف",
         arrayOf(
-            "Action", "Adventure", "Animation", "Western", "Sport", "Short",
-            "Documentary", "Fantasy", "Sci-fi", "Romance", "Comedy", "Family",
-            "Drama", "Thriller", "Crime", "Horror", "Biography",
+            "Action",
+            "Adventure",
+            "Animation",
+            "Western",
+            "Sport",
+            "Short",
+            "Documentary",
+            "Fantasy",
+            "Sci-fi",
+            "Romance",
+            "Comedy",
+            "Family",
+            "Drama",
+            "Thriller",
+            "Crime",
+            "Horror",
+            "Biography",
         ).sortedArray(),
     )
 
@@ -361,7 +357,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
                 val index = findIndexOfValue(selected)
                 val entry = entryValues[index] as String
                 preferences.edit().putString(key, entry).commit()
-                true
             }
         }
         screen.addPreference(videoQualityPref)
