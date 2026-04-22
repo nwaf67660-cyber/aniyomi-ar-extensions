@@ -37,6 +37,10 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     private val preferences: SharedPreferences by lazy {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
     }
+override val client = network.client.newBuilder()
+    .addNetworkInterceptor { chain ->
+        chain.proceed(chain.request().newBuilder()
+            .header("Mozilla/5.0 (Windows NT 10.0;Win64;x64;rv:136.0)Gecko", "Mozilla/5.0 (Windows NT    
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
@@ -316,4 +320,4 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         }
         screen.addPreference(videoQualityPref)
     }
-}
+                    }
