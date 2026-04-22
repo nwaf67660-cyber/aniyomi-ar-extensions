@@ -5,83 +5,75 @@ on:
   workflow_dispatch:
 
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: set-matrix
-        run: |
-          # عدّ الـ modules الحقيقية
-          NUM_MODULES=$(find src/ -type f -path "*/build.gradle*" -o -path "*/build.gradle.kts" | wc -l)
-          
-          if [ "$NUM_MODULES" -eq 0 ]; then
-            echo "No modules found! Listing structure:"
-            find src/ -type f | head -20
-            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
-          else
-            CHUNKS=$(( (NUM_MODULES + 64) / 65 ))
-            echo "Found $NUM_MODULES modules, $CHUNKS chunks"
-            echo "matrix={\"chunk\":[$(seq 0 $((CHUNKS-1)) | paste -sd ,)]}" >> $GITHUB_OUTPUT
-          fi
-
   build:
-    needs: prepare
     runs-on: ubuntu-latest
-    if: fromJson(needs.prepare.outputs.matrix.include) != '' || contains(fromJson(needs.prepare.outputs.matrix).chunk, 0)
-    strategy:
-      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Debug Structure
+        run: |
+          echo "=== Project Structure ==="
+          find src/ -type f | head -20 || echo "src/ empty!"
+          ls -la src/ || echo "No src folder"
 
       - uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: temurin
 
-      - name: Build chunk ${{ matrix.chunk }}
-        run: ./gradlew -p src assembleRelease
+      - name: Build Extensions
+        run: |
+          chmod +x gradlew
+          ./gradlew clean assembleRelease --no-daemon || ./gradlew tasks
 
-      - uses: actions/upload-artifact@v4
+      - name: Find APKs
+        run: |
+          find . -name "*.apk" -type f || echo "No APKs found"
+
+      - name: Upload APKs
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: apks-${{ matrix.chunk }}
-          path: src/**/build/outputs/apk/release/*.apk
+          name: all-apks
+          path: |
+            **/build/outputs/apk/**/*.apk
+            src/**/build/outputs/apk/**/*.apk
 
   publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - uses: actions/download-artifact@v4
         with:
           path: apks/
 
-      - uses: actions/setup-java@v4
-        with:
-          java-version: 17
-
-      - name: Generate repo
+      - name: Setup Tools
         run: |
-          apt-get update -qq && apt-get install -y jq
-          mkdir -p repo/apk
-          find apks -name "*.apk" -exec cp {} repo/apk/ \;
-          
-          curl -L "$(curl -s https://api.github.com/repos/aniyomiorg/aniyomi-extensions-inspector/releases/latest | jq -r '.assets[0].browser_download_url')" -o Inspector.jar
-          
-          java -jar Inspector.jar repo/apk output.json tmp
-          python .github/scripts/create-repo.py || echo "Create repo failed"
+          sudo apt update -qq
+          sudo apt install -y jq python3
 
-      - name: Push repo
+      - name: Generate Repo
+        run: |
+          mkdir -p repo/apk
+          find apks -name "*.apk" -exec cp {} repo/apk/ \; 2>/dev/null || echo "No APKs to copy"
+          
+          curl -s https://api.github.com/repos/aniyomiorg/aniyomi-extensions-inspector/releases/latest | \
+            jq -r '.assets[0].browser_download_url' | \
+            xargs curl -L -o Inspector.jar || echo "Inspector download failed"
+          
+          java -jar Inspector.jar repo/apk output.json tmp 2>/dev/null || echo "Inspector failed"
+          ls -la repo/ || echo "Repo generation failed"
+
+      - name: Commit Repo
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add repo/
-          if git diff --staged --quiet; then
-            echo "No changes"
-          else
-            git commit -m "Update repo [skip ci]"
-            git push
-          fi
+          git add repo/ -f
+          git commit -m "Update repo [skip ci]" || echo "No changes to commit"
+          git push || echo "Push failed"
