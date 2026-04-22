@@ -12,34 +12,48 @@ jobs:
         with:
           ref: main
 
+      - name: Fix Gradle Repositories ⚠️
+        run: |
+          # إصلاح settings.gradle.kts
+          cat >> settings.gradle.kts << 'EOF'
+          
+          pluginManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          EOF
+          
+          # تعليق google() في build.gradle.kts
+          sed -i.bak 's|google()|// google()|g' build.gradle.kts
+          echo "✅ Fixed repositories!"
+
       - name: Debug Structure
         run: |
-          echo "=== Project Structure ==="
-          find src/ -type f | head -20 || echo "src/ empty!"
-          ls -la src/ || echo "No src folder"
+          echo "=== Fixed files ==="
+          head -20 settings.gradle.kts
+          grep -n "google()" build.gradle.kts || echo "No google() found"
 
       - uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: temurin
 
-      - name: Build Extensions
+      - name: Build
         run: |
-          chmod +x gradlew
-          ./gradlew clean assembleRelease --no-daemon || ./gradlew tasks
+          ./gradlew clean assembleRelease --no-daemon
 
       - name: Find APKs
-        run: |
-          find . -name "*.apk" -type f || echo "No APKs found"
+        run: find . -name "*.apk"
 
-      - name: Upload APKs
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: all-apks
+          name: apks
           path: |
             **/build/outputs/apk/**/*.apk
-            src/**/build/outputs/apk/**/*.apk
 
   publish:
     needs: build
@@ -53,27 +67,21 @@ jobs:
         with:
           path: apks/
 
-      - name: Setup Tools
+      - name: Publish Repo
         run: |
-          sudo apt update -qq
-          sudo apt install -y jq python3
-
-      - name: Generate Repo
-        run: |
+          apt-get update -qq && apt-get install -y jq
           mkdir -p repo/apk
-          find apks -name "*.apk" -exec cp {} repo/apk/ \; 2>/dev/null || echo "No APKs to copy"
+          find apks -name "*.apk" -exec cp {} repo/apk/ \;
           
-          curl -s https://api.github.com/repos/aniyomiorg/aniyomi-extensions-inspector/releases/latest | \
-            jq -r '.assets[0].browser_download_url' | \
-            xargs curl -L -o Inspector.jar || echo "Inspector download failed"
+          curl -L "$(curl -s https://api.github.com/repos/aniyomiorg/aniyomi-extensions-inspector/releases/latest | jq -r '.assets[0].browser_download_url')" -o Inspector.jar
           
-          java -jar Inspector.jar repo/apk output.json tmp 2>/dev/null || echo "Inspector failed"
-          ls -la repo/ || echo "Repo generation failed"
+          java -jar Inspector.jar repo/apk output.json tmp
+          python .github/scripts/create-repo.py
 
-      - name: Commit Repo
+      - name: Push
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add repo/ -f
-          git commit -m "Update repo [skip ci]" || echo "No changes to commit"
-          git push || echo "Push failed"
+          git add repo/
+          git commit -m "Update repo [skip ci]" || exit 0
+          git push || exit 0
