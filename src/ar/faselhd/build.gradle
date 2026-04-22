@@ -1,12 +1,45 @@
-ext {
-    extName = 'FASELHD'
-    extClass = '.FASELHD'
-    extVersionCode = 4
+plugins {
+    id("com.android.library")
+    id("org.jetbrains.kotlin.android")
+    kotlin("plugin.parcelize")
 }
 
-apply from: "$rootDir/common.gradle"
+android {
+    namespace = "eu.kanade.tachiyomi.animeextension.ar.faselhd"
+    compileSdk = 34
+
+    defaultConfig {
+        minSdk = 21
+        version = "1.0.5"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
+    
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
 
 dependencies {
-    implementation(project(":lib:playlist-utils"))
-    implementation(project(":lib:synchrony"))
+    compileOnly("androidx.core:core-ktx:1.12.0")
+    compileOnly("eu.kanade.tachiyomi:animesource:0.3.4")
+    compileOnly("eu.kanade.tachiyomi:network:0.2.1")
+    compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+    compileOnly("org.jsoup:jsoup:1.17.2")
 }
