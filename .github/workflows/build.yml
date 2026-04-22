@@ -1,36 +1,62 @@
-name: Build & Publish
+name: Build ALL extensions
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches: [main]  # ✅ أضف هذا
+  workflow_dispatch:  # ✅ حافظ عليه
+    inputs:
+      git-ref:        # ✅ بس خلّي هذا الـ input
+        default: 'main'
+
+env:
+  CI_CHUNK_SIZE: 65
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      individualMatrix: ${{ steps.matrices.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4  # ✅ مشروعك مو repo ثاني
+
+      - name: Count modules
+        id: count
+        run: |
+          NUM=$(find src/ -maxdepth 2 -name "build.gradle*" | wc -l)
+          echo "NUM_INDIVIDUAL_MODULES=$NUM" >> $GITHUB_OUTPUT
+
+      - id: matrices
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const num = parseInt(process.env.NUM_INDIVIDUAL_MODULES || '0');
+            const size = 65;
+            const chunks = Math.ceil(num / size);
+            core.setOutput('matrix', JSON.stringify({chunk: Array.from({length: chunks}, (_,i)=>i)}));
+
+  build_all:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.prepare.outputs.individualMatrix) }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
-          java-version: 17
-          distribution: temurin
+          java-version: 17  # ✅ 17 مو 21 (لتوافق)
 
-      - name: Build
-        run: |
-          chmod +x gradlew
-          ./gradlew clean :src:assembleRelease --no-daemon --stacktrace
-
-      - name: List APKs
-        run: find src/ -name "*.apk" -type f
+      - name: Build chunk ${{ matrix.chunk }}
+        env:
+          CI_CHUNK_NUM: ${{ matrix.chunk }}
+        run: ./gradlew -p src assembleRelease  # ✅ Release مو Debug
 
       - uses: actions/upload-artifact@v4
         with:
-          name: apks
-          path: src/**/build/outputs/apk/release/*.apk
+          name: apks-${{ matrix.chunk }}
+          path: src/**/build/outputs/apk/release/*.apk  # ✅ مسار صحيح
 
   publish:
-    needs: build
+    needs: build_all
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,26 +65,25 @@ jobs:
         with:
           path: apks/
 
-      - name: Publish Repo
+      - uses: actions/setup-java@v4
+        with:
+          java-version: 17
+
+      - name: Create repo
         run: |
-          apt-get update -qq && apt-get install -y jq
-          
           mkdir -p repo/apk
           find apks -name "*.apk" -exec cp {} repo/apk/ \;
           
-          curl -s https://api.github.com/repos/aniyomiorg/aniyomi-extensions-inspector/releases/latest | \
-            jq -r '.assets[0].browser_download_url' | \
-            xargs curl -L -o Inspector.jar
+          apt-get update -qq && apt-get install -y jq
+          curl -L "$(curl -s https://api.github.com/repos/aniyomiorg/aniyomi-extensions-inspector/releases/latest | jq -r '.assets[0].browser_download_url')" -o Inspector.jar
           
           java -jar Inspector.jar repo/apk output.json tmp
           python .github/scripts/create-repo.py
 
-      - name: Commit
+      - name: Push
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add repo/
-          if ! git diff --staged --quiet; then
-            git commit -m "Update repo"
-            git push
-          fi
+          git commit -m "Update repo [skip ci]" || exit 0
+          git push
