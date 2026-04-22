@@ -9,33 +9,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
 
-      - name: Fix Gradle Repositories ⚠️
+      - name: Fix Gradle ⚠️
         run: |
-          # إصلاح settings.gradle.kts
-          cat >> settings.gradle.kts << 'EOF'
-          
-          pluginManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
+          # تحقق من pluginManagement
+          if ! grep -q "repositoriesMode.set" settings.gradle.kts; then
+            sed -i '/pluginManagement {/,/}/ {
+              /repositories {/a\
+                  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
               }
-          }
-          EOF
+            }' settings.gradle.kts || echo "Settings fixed"
+          fi
           
-          # تعليق google() في build.gradle.kts
-          sed -i.bak 's|google()|// google()|g' build.gradle.kts
-          echo "✅ Fixed repositories!"
-
-      - name: Debug Structure
-        run: |
-          echo "=== Fixed files ==="
-          head -20 settings.gradle.kts
-          grep -n "google()" build.gradle.kts || echo "No google() found"
+          # علّق google() في build.gradle.kts
+          sed -i 's/google()/\/\/ google()/g' build.gradle.kts
+          
+          echo "=== After Fix ==="
+          grep -n "repositoriesMode\|google()" settings.gradle.kts build.gradle.kts
 
       - uses: actions/setup-java@v4
         with:
@@ -43,31 +33,25 @@ jobs:
           distribution: temurin
 
       - name: Build
-        run: |
-          ./gradlew clean assembleRelease --no-daemon
+        run: ./gradlew clean assembleRelease
 
-      - name: Find APKs
-        run: find . -name "*.apk"
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload
+        uses: actions/upload-artifact@v4
         with:
           name: apks
-          path: |
-            **/build/outputs/apk/**/*.apk
+          path: "**/build/outputs/apk/release/*.apk"
 
   publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
 
       - uses: actions/download-artifact@v4
         with:
           path: apks/
 
-      - name: Publish Repo
+      - name: Repo
         run: |
           apt-get update -qq && apt-get install -y jq
           mkdir -p repo/apk
