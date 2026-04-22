@@ -112,7 +112,7 @@ jobs:
 
       - name: Upload APKs (chunk ${{ matrix.chunk }})
         uses: actions/upload-artifact@v4
-        if: "github.repository == 'adly98/aniyomi-ar-extensions'"
+        if: "github.repository == 'nwaf67660-cyber/aniyomi-ar-extensions'"
         with:
           name: "individual-apks-${{ matrix.chunk }}"
           path: "**/*.apk"
@@ -125,7 +125,7 @@ jobs:
     name: Publish repo
     needs:
       - build_individual
-    if: "github.repository == 'adly98/aniyomi-ar-extensions'"
+    if: "github.repository == 'nwaf67660-cyber/aniyomi-ar-extensions'"
     runs-on: ubuntu-latest
     steps:
       - name: Download APK artifacts
