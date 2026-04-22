@@ -1,10 +1,7 @@
 name: Build & Publish
-
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
   workflow_dispatch:
 
 jobs:
@@ -12,6 +9,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fix Gradle Repositories
+        run: |
+          # Backup original files
+          cp settings.gradle.kts settings.gradle.kts.bak
+          cp build.gradle.kts build.gradle.kts.bak
+          
+          # Fix settings.gradle.kts - add repositoriesMode
+          sed -i '1i pluginManagement {\n    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\n    repositories {\n        google()\n        mavenCentral()\n        gradlePluginPortal()\n    }\n}\n' settings.gradle.kts
+          
+          # Comment google() in build.gradle.kts
+          sed -i 's|google()|#google()|g' build.gradle.kts
 
       - uses: actions/setup-java@v4
         with:
@@ -19,15 +30,19 @@ jobs:
           distribution: temurin
           cache: gradle
 
+      - uses: gradle/wrapper-validation-action@v3
+
       - uses: gradle/actions/setup-gradle@v3
 
       - name: Build APKs
-        run: ./gradlew :src:assembleRelease
+        run: ./gradlew clean :src:assembleRelease
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
         with:
           name: apks
-          path: src/**/build/outputs/apk/release/*.apk
+          path: |
+            src/**/build/outputs/apk/release/*.apk
 
   publish:
     needs: build
@@ -43,23 +58,34 @@ jobs:
         with:
           java-version: 17
 
-      - name: Deploy repo
+      - name: Deploy Repository
         run: |
-          # Copy APKs
+          # Install jq
+          sudo apt-get update -qq
+          sudo apt-get install -y jq
+          
+          # Setup repo/apk
           mkdir -p repo/apk
-          cp apks/extension-apks/*.apk repo/apk/
+          find apks/ -name "*.apk" -exec cp {} repo/apk/ \; || true
           
-          # Inspector
-          curl -L "$(curl -s https://api.github.com/repos/aniyomiorg/aniyomi-extensions-inspector/releases/latest | jq -r '.assets[0].browser_download_url')" -o Inspector.jar
+          # Download Inspector
+          INSPECTOR_URL=$(curl -s "https://api.github.com/repos/aniyomiorg/aniyomi-extensions-inspector/releases/latest" | jq -r '.assets[0].browser_download_url')
+          curl -L "$INSPECTOR_URL" -o Inspector.jar
           
-          # Generate
+          # Generate repo
           java -jar Inspector.jar repo/apk output.json tmp
           python .github/scripts/create-repo.py
 
-      - name: Push updates
+      - name: Commit & Push
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
           git add repo/
-          git commit -m "Update repo" || exit 0
-          git push
+          
+          if git diff --staged --quiet; then
+            echo "✅ No repo changes needed"
+          else
+            git commit -m "chore: update extensions repo [skip ci]"
+            git push origin main
+            echo "✅ Repo updated successfully!"
+          fi
