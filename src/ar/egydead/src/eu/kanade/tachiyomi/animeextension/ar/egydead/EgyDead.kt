@@ -84,7 +84,6 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
                 val assemblySelector = "div.salery-list li.movieItem a"
                 episodes.addAll(document.select(assemblySelector).map(::episodeExtract))
             } else if (url.contains("serie") || url.contains("season")) {
-                // FIX 1: استبدال isNullOrEmpty بـ isEmpty لأن Jsoup دايماً يرجع List مو nullable
                 if (document.select("div.seasons-list li.movieItem a").isEmpty()) {
                     episodes.addAll(
                         document.select(episodeListSelector()).map(::episodeFromElement),
@@ -116,9 +115,7 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun episodeFromElement(element: Element): SEpisode {
         val episode = SEpisode.create()
         episode.setUrlWithoutDomain(element.attr("href"))
-        // FIX 2: element نفسه هو <a>، نستخدم text() مباشرة بدل select("a").text()
         episode.name = element.text()
-        // FIX 3: toFloatOrNull بدل toFloat() لتجنب crash لو النص مو رقم
         episode.episode_number = element.text().filter { it.isDigit() }.toFloatOrNull() ?: 0f
         return episode
     }
@@ -127,13 +124,12 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     private val streamWishExtractor by lazy { StreamWishExtractor(client, headers) }
     private val doodExtractor by lazy { DoodExtractor(client) }
-    private val mixDropExtractor by lazy { MixDropExtractor(client, headers) }
+    private val mixDropExtractor by lazy { MixDropExtractor(client) }
     private val uqloadExtractor by lazy { UqloadExtractor(client) }
     private val urlResolver by lazy { UrlResolver(client) }
 
     override fun videoListParse(response: Response): List<Video> {
         val requestBody = FormBody.Builder().add("View", 1.toString()).build()
-        // FIX 4: إضافة headers كاملة مع referer صحيح
         val newHeaders = headers.newBuilder()
             .set("Referer", "$baseUrl/")
             .set("X-Requested-With", "XMLHttpRequest")
@@ -145,7 +141,6 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
         val links = newResponse.select(videoListSelector())
 
-        // FIX 5: لو ما لقى روابط بعد POST، يحاول يجيبها من الصفحة الأصلية مباشرة
         if (links.isEmpty()) {
             return response.asJsoup().select(videoListSelector())
                 .parallelCatchingFlatMapBlocking(::extractVideos)
@@ -156,7 +151,6 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     private fun extractVideos(link: Element): List<Video> {
         val url = link.attr("data-link")
-        // FIX 6: إضافة تحقق من الـ url مو فارغ قبل المعالجة
         if (url.isBlank()) return emptyList()
         return when {
             "gsfqzmqu" in url || "gsfomqu" in url || "gsfjzmqu" in url || "732eg54de642sa" in url ->
