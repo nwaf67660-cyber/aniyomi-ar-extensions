@@ -10,29 +10,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fix Gradle ⚠️
-        run: |
-          # تحقق من pluginManagement
-          if ! grep -q "repositoriesMode.set" settings.gradle.kts; then
-            sed -i '/pluginManagement {/,/}/ {
-              /repositories {/a\
-                  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              }
-            }' settings.gradle.kts || echo "Settings fixed"
-          fi
-          
-          # علّق google() في build.gradle.kts
-          sed -i 's/google()/\/\/ google()/g' build.gradle.kts
-          
-          echo "=== After Fix ==="
-          grep -n "repositoriesMode\|google()" settings.gradle.kts build.gradle.kts
-
       - uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: temurin
 
       - name: Build
+        env:
+          CI_CHUNK_SIZE: 65
+          CI_CHUNK_NUM: 0
         run: ./gradlew clean assembleRelease
 
       - name: Upload
