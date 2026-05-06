@@ -19,13 +19,15 @@ jobs:
         env:
           CI_CHUNK_SIZE: 65
           CI_CHUNK_NUM: 0
-        run: ./gradlew clean assembleRelease
+        # تم التغيير هنا من assembleRelease إلى assembleDebug
+        run: ./gradlew clean assembleDebug
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: apks
-          path: "**/build/outputs/apk/release/*.apk"
+          # تم تغيير المسار هنا ليبحث في مجلد الـ debug بدلاً من release
+          path: "**/build/outputs/apk/debug/*.apk"
 
   publish:
     needs: build
