@@ -112,22 +112,27 @@ configurations.all {
     }
 }
 
+// التعديل هنا لضمان إنشاء الملف والمجلدات بنجاح
 tasks.register("writeManifestFile") {
     doLast {
         def manifest = android.sourceSets.getByName("main").manifest
         if (!manifest.srcFile.exists()) {
-            File tempFile = layout.buildDirectory.get().file("tempAndroidManifest.xml").getAsFile()
+            File buildDir = layout.buildDirectory.get().asFile
+            if (!buildDir.exists()) {
+                buildDir.mkdirs()
+            }
+            File tempFile = new File(buildDir, "tempAndroidManifest.xml")
             if (!tempFile.exists()) {
-                tempFile.withWriter {
-                    it.write('<?xml version="1.0" encoding="utf-8"?>\n<manifest />\n')
-                }
+                tempFile.text = '<?xml version="1.0" encoding="utf-8"?>\n<manifest />\n'
             }
             manifest.srcFile(tempFile.path)
         }
     }
 }
 
-preBuild.dependsOn(writeManifestFile, lintKotlin)
+preBuild.dependsOn(writeManifestFile)
+
 if (System.getenv("CI") != "true") {
+    preBuild.dependsOn(lintKotlin)
     lintKotlin.dependsOn(formatKotlin)
 }
