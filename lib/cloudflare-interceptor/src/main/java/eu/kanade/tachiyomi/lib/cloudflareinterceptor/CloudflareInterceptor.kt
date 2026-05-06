@@ -27,10 +27,8 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
     @Synchronized
     override fun intercept(chain: Interceptor.Chain): Response {
         val originalRequest = chain.request()
-
         val originalResponse = chain.proceed(chain.request())
 
-        // if Cloudflare anti-bot didn't block it, then do nothing and return it
         if (!(originalResponse.code in ERROR_CODES && originalResponse.header("Server") in SERVER_CHECK)) {
             return originalResponse
         }
@@ -38,11 +36,8 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
         return try {
             originalResponse.close()
             val request = resolveWithWebView(originalRequest, client)
-
             chain.proceed(request)
         } catch (e: Exception) {
-            // Because OkHttp's enqueue only handles IOExceptions, wrap the exception so that
-            // we don't crash the entire app
             throw IOException(e)
         }
     }
@@ -54,12 +49,8 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
 
     @SuppressLint("SetJavaScriptEnabled")
     fun resolveWithWebView(request: Request, client: OkHttpClient): Request {
-        // We need to lock this thread until the WebView finds the challenge solution url, because
-        // OkHttp doesn't support asynchronous interceptors.
         val latch = CountDownLatch(1)
-
         val jsinterface = CloudflareJSI(latch)
-
         var webView: WebView? = null
 
         val origRequestUrl = request.url.toString()
@@ -74,9 +65,8 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
                 databaseEnabled = true
                 useWideViewPort = true
                 loadWithOverviewMode = false
-                // تم التعديل: استخدام User-Agent حديث لمتصفح Chrome على أندرويد
-                userAgentString = request.header("User-Agent")
-                    ?: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                // اختيار عشوائي ذكي في كل طلب
+                userAgentString = USER_AGENTS.random()
             }
 
             webview.addJavascriptInterface(jsinterface, "CloudflareJSI")
@@ -89,7 +79,6 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
             webview.loadUrl(origRequestUrl, headers)
         }
 
-        // تم التعديل: زيادة وقت الانتظار إلى 45 ثانية لضمان حل التحديات المعقدة
         latch.await(45, TimeUnit.SECONDS)
 
         handler.post {
@@ -104,13 +93,9 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
             ?.mapNotNull { Cookie.parse(request.url, it) }
             ?: emptyList<Cookie>()
 
-        // Copy webview cookies to OkHTTP cookie storage
         cookies.forEach {
             client.cookieJar.saveFromResponse(
-                url = HttpUrl.Builder()
-                    .scheme("http")
-                    .host(it.domain)
-                    .build(),
+                url = HttpUrl.Builder().scheme("http").host(it.domain).build(),
                 cookies = cookies,
             )
         }
@@ -119,13 +104,8 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
     }
 
     private fun createRequestWithCookies(request: Request, cookies: List<Cookie>): Request {
-        val convertedForThisRequest = cookies.filter {
-            it.matches(request.url)
-        }
-        val existingCookies = Cookie.parseAll(
-            request.url,
-            request.headers,
-        )
+        val convertedForThisRequest = cookies.filter { it.matches(request.url) }
+        val existingCookies = Cookie.parseAll(request.url, request.headers)
         val filteredExisting = existingCookies.filter { existing ->
             convertedForThisRequest.none { converted -> converted.name == existing.name }
         }
@@ -140,22 +120,33 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
         private val ERROR_CODES = listOf(403, 503)
         private val SERVER_CHECK = arrayOf("cloudflare-nginx", "cloudflare")
 
-        // ref: https://github.com/vvanglro/cf-clearance/blob/0d3455b5b4f299b131f357dd6e0a27316cf26f9a/cf_clearance/retry.py#L15
+        private val USER_AGENTS = listOf(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+            "Mozilla/5.0 (iPad; CPU OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Android 14; Mobile; rv:125.0) Gecko/125.0 Firefox/125.0",
+            "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        )
+
         private val CHECK_SCRIPT by lazy {
             """
             setInterval(() => {
                 if (document.querySelector("#challenge-form") != null) {
-                    // still havent passed, lets try to click in some challenges
                     const simpleChallenge = document.querySelector("#challenge-stage > div > input[type='button']")
                     if (simpleChallenge != null) simpleChallenge.click()
-
                     const turnstile = document.querySelector("div.hcaptcha-box > iframe")
                     if (turnstile != null) {
                         const button = turnstile.contentWindow.document.querySelector("input[type='checkbox']")
                         if (button != null) button.click()
                     }
                 } else {
-                    // passed
                     CloudflareJSI.leave()
                 }
             }, 2500)
