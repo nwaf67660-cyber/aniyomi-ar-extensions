@@ -81,19 +81,16 @@ class Anime4Up : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     // =========================== Anime Details ============================
     override fun animeDetailsParse(document: Document) = SAnime.create().apply {
-        val doc = document // Shortcut
+        val doc = document
 
         thumbnail_url = doc.selectFirst("img.thumbnail")!!.attr("src")
         title = doc.selectFirst("h1.anime-details-title")!!.text()
-        // Genres + useful info
         genre = doc.select("ul.anime-genres > li > a, div.anime-info > a").eachText().joinToString()
 
         description = buildString {
-            // Additional info
             doc.select("div.anime-info").eachText().forEach {
                 append("$it\n")
             }
-            // Description
             doc.selectFirst("p.anime-story")?.text()?.also {
                 append("\n$it")
             }
@@ -135,7 +132,7 @@ class Anime4Up : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     private val streamWishExtractor by lazy { StreamWishExtractor(client, headers) }
     private val vidBomExtractor by lazy { VidBomExtractor(client) }
     private val mp4uploadExtractor by lazy { Mp4uploadExtractor(client) }
-    private val mixDropExtractor by lazy { MixDropExtractor(client, headers) }
+    private val mixDropExtractor by lazy { MixDropExtractor(client) }
 
     private fun extractVideos(
         url: String,
@@ -296,7 +293,7 @@ class Anime4Up : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
             Pair("كوميدي", "%d9%83%d9%88%d9%85%d9%8a%d8%af%d9%8a"),
             Pair(
                 "محاكاة ساخرة",
-                "%d9%85%d8%ad%d8%a7%d9%83%d8%a7%d8%a9-%d8%b3%d8%a7%d8%ae%d8%b1%d8%a9",
+                "%d9%85%d8%ad%d8%a7%d9%83%d8%a9-%d8%b3%d8%a7%d8%ae%d8%b1%d8%a9",
             ),
             Pair("مدرسي", "%d9%85%d8%af%d8%b1%d8%b3%d9%8a"),
             Pair("مصاصي دماء", "%d9%85%d8%b5%d8%a7%d8%b5%d9%8a-%d8%af%d9%85%d8%a7%d8%a1"),
