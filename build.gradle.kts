@@ -1,29 +1,21 @@
-// Top-level build file
 buildscript {
     repositories {
-        google()
         mavenCentral()
-        maven("https://maven.tachiyomi.org/repository/maven-public/")
+        google()
+        maven(url = "https://plugins.gradle.org/m2/")
     }
     dependencies {
-        classpath("com.android.tools.build:gradle:8.1.4")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.10")
+        classpath(libs.gradle.agp)
+        classpath(libs.gradle.kotlin)
+        classpath(libs.gradle.kotlin.serialization)
+        classpath(libs.gradle.kotlinter)
     }
-}
-
-plugins {
-    id("com.gradle.enterprise") version "3.15" apply false
 }
 
 allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        maven("https://maven.tachiyomi.org/repository/maven-public/")
-        maven("https://s01.oss.sonatype.org/content/repositories/snapshots/")
+    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+        kotlinOptions {
+            jvmTarget = JavaVersion.VERSION_1_8.toString()
+        }
     }
-}
-
-tasks.register("clean", Delete::class) {
-    delete(rootProject.buildDir)
 }
