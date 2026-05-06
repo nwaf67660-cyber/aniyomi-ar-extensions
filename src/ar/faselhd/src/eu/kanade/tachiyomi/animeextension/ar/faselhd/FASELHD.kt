@@ -37,10 +37,9 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     private val preferences: SharedPreferences by lazy {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
     }
-override val client = network.client.newBuilder()
-    .addNetworkInterceptor { chain ->
-        chain.proceed(chain.request().newBuilder()
-            .header("Mozilla/5.0 (Windows NT 10.0;Win64;x64;rv:136.0)Gecko", "Mozilla/5.0 (Windows NT    
+
+    // FIX 1: استخدام cloudflareClient بدل client العادي لتجاوز حماية Cloudflare
+    override val client = network.cloudflareClient
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
 
@@ -68,11 +67,12 @@ override val client = network.client.newBuilder()
     override fun episodeListSelector() = "div.epAll a"
 
     private fun seasonsNextPageSelector(seasonNumber: Int) =
-        "div#seasonList div.col-xl-2:nth-child($seasonNumber)" // "div.List--Seasons--Episodes > a:nth-child($seasonNumber)"
+        "div#seasonList div.col-xl-2:nth-child($seasonNumber)"
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val episodes = mutableListOf<SEpisode>()
         var seasonNumber = 1
+
         fun episodeExtract(element: Element): SEpisode {
             val episode = SEpisode.create()
             episode.setUrlWithoutDomain(element.select("span#liskSh").text())
@@ -81,21 +81,18 @@ override val client = network.client.newBuilder()
         }
 
         fun addEpisodes(document: Document) {
-            if (document.select(episodeListSelector()).isNullOrEmpty()) {
+            if (document.select(episodeListSelector()).isEmpty()) {
                 document.select("div.shortLink").map { episodes.add(episodeExtract(it)) }
             } else {
                 document.select(episodeListSelector()).map { episodes.add(episodeFromElement(it)) }
                 document.selectFirst(seasonsNextPageSelector(seasonNumber))?.let {
                     seasonNumber++
+                    // FIX 2: إضافة headers للطلب لتجنب رفض الخادم
+                    val seasonUrl = "$baseUrl/?p=" + it.select("div.seasonDiv")
+                        .attr("onclick").substringAfterLast("=")
+                        .substringBeforeLast("'")
                     addEpisodes(
-                        client.newCall(
-                            GET(
-                                "$baseUrl/?p=" + it.select("div.seasonDiv")
-                                    .attr("onclick").substringAfterLast("=")
-                                    .substringBeforeLast("'"),
-                                headers,
-                            ),
-                        ).execute().asJsoup(),
+                        client.newCall(GET(seasonUrl, headers)).execute().asJsoup(),
                     )
                 }
             }
@@ -110,7 +107,8 @@ override val client = network.client.newBuilder()
         episode.setUrlWithoutDomain(element.attr("abs:href"))
         episode.name = element.ownerDocument()!!.select("div.seasonDiv.active > div.title")
             .text() + " : " + element.text()
-        episode.episode_number = element.text().replace("الحلقة ", "").toFloat()
+        // FIX 3: معالجة خطأ toFloat() لو النص مو رقم
+        episode.episode_number = element.text().replace("الحلقة ", "").toFloatOrNull() ?: 0f
         return episode
     }
 
@@ -121,8 +119,18 @@ override val client = network.client.newBuilder()
     override fun videoListParse(response: Response): List<Video> {
         val document = response.asJsoup()
         val iframe = document.selectFirst("iframe")!!.attr("src")
-        val iframeDoc = client.newCall(GET(iframe)).execute().asJsoup()
-        val jsScript = iframeDoc.selectFirst("script:containsData(mainPlayer)")!!.data().let(Deobfuscator::deobfuscateScript)!!
+
+        // FIX 4: إضافة Referer header لطلب الـ iframe حتى لا يرفضه الخادم
+        val iframeHeaders = headers.newBuilder()
+            .set("Referer", response.request.url.toString())
+            .build()
+        val iframeDoc = client.newCall(GET(iframe, iframeHeaders)).execute().asJsoup()
+
+        val jsScript = iframeDoc.selectFirst("script:containsData(mainPlayer)")
+            ?.data()
+            ?.let(Deobfuscator::deobfuscateScript)
+            ?: return emptyList() // FIX 5: بدل !! الذي يكسر التطبيق لو ما وجد السكريبت
+
         val playUrl = jsScript.substringAfter("file").substringAfter("'").substringBefore("'")
         return playlistUtils.extractFromHls(playUrl)
     }
@@ -180,10 +188,9 @@ override val client = network.client.newBuilder()
         anime.title = document.select("meta[itemprop=name]").attr("content")
         anime.genre = document.select("span:contains(تصنيف) > a, span:contains(مستوى) > a")
             .joinToString(", ") { it.text() }
-        // anime.thumbnail_url = document.select("div.posterImg img.poster").attr("src")
 
         val cover = document.select("div.posterImg img.poster").attr("src")
-        anime.thumbnail_url = if (cover.isNullOrEmpty()) {
+        anime.thumbnail_url = if (cover.isEmpty()) {
             document.select("div.col-xl-2 > div.seasonDiv:nth-child(1) > img").attr("data-src")
         } else {
             cover
@@ -300,7 +307,7 @@ override val client = network.client.newBuilder()
         fun toUriPart() = vals[state].second
     }
 
-    // preferred quality settings
+    // ========================= Preferences ================================
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         val videoQualityPref = ListPreference(screen.context).apply {
@@ -320,4 +327,4 @@ override val client = network.client.newBuilder()
         }
         screen.addPreference(videoQualityPref)
     }
-                    }
+}
