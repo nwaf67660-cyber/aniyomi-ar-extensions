@@ -93,7 +93,9 @@ class AnimeLek : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     private val streamTapeExtractor by lazy { StreamTapeExtractor(client) }
     private val vidBomExtractor by lazy { VidBomExtractor(client) }
     private val mp4uploadExtractor by lazy { Mp4uploadExtractor(client) }
-    private val mixDropExtractor by lazy { MixDropExtractor(client, headers) }
+    
+    // التعديل هنا: تم حذف headers ليتوافق مع الإصدار الجديد من المكتبة
+    private val mixDropExtractor by lazy { MixDropExtractor(client) }
 
     private fun extractVideos(
         url: String,
