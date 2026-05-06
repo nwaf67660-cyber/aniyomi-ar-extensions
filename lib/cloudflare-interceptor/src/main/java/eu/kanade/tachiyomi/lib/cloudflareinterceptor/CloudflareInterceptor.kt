@@ -74,8 +74,9 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
                 databaseEnabled = true
                 useWideViewPort = true
                 loadWithOverviewMode = false
+                // تم التعديل: استخدام User-Agent حديث لمتصفح Chrome على أندرويد
                 userAgentString = request.header("User-Agent")
-                    ?: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"
+                    ?: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
             }
 
             webview.addJavascriptInterface(jsinterface, "CloudflareJSI")
@@ -88,9 +89,8 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
             webview.loadUrl(origRequestUrl, headers)
         }
 
-        // Wait a reasonable amount of time to retrieve the solution. The minimum should be
-        // around 4 seconds but it can take more due to slow networks or server issues.
-        latch.await(30, TimeUnit.SECONDS)
+        // تم التعديل: زيادة وقت الانتظار إلى 45 ثانية لضمان حل التحديات المعقدة
+        latch.await(45, TimeUnit.SECONDS)
 
         handler.post {
             webView?.stopLoading()
