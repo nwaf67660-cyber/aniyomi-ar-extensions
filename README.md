@@ -1,6 +1,6 @@
 | Install |
 | :--- |
-| [![Install](https://img.shields.io/badge/Click%20here%20to%20install%20this%20repo-green&style=flat)](https://intradeus.github.io/http-protocol-redirector/?r=aniyomi://add-repo?url=https://raw.githubusercontent.com/nwaf67660-cyber/aniyomi-ar-extensions/main/repo/index.json) |
+| [![Install](https://img.shields.io/badge/Click%20here%20to%20install%20this%20repo-green&style=flat)](https://intradeus.github.io/http-protocol-redirector/?r=aniyomi://add-repo?url=https://raw.githubusercontent.com/nwaf67660-cyber/aniyomi-ar-extensions/refs/heads/repo/index.min.json) |
 
 # ![app icon](./.github/readme-images/app-icon.png) Arabic Aniyomi Extensions
 Aniyomi is a free and open source manga reader for Android 6.0 and above.
@@ -8,7 +8,7 @@ This repository contains the available arabic extension catalogues for the [Aniy
 # Usage
 Extension sources can be downloaded, installed, and uninstalled via the main Aniyomi app. They are installed and uninstalled like regular apps, in `.apk` format.
 ## Downloads
-If you prefer to directly download the APK files, they are available in this GitHub repository in the [main branch](https://github.com/nwaf67660-cyber/aniyomi-ar-extensions/tree/main/repo/apk).
+If you prefer to directly download the APK files, they are available in this GitHub repository in the [repo branch](https://github.com/nwaf67660-cyber/aniyomi-ar-extensions/tree/repo/apk).
 # Requests
 Source requests here are meant as up-for-grabs for any developer, thus it's impossible to provide a time estimation for any of them. Furthermore, some sites are impossible to do, usually because of various technical reasons.
 # Contributing
