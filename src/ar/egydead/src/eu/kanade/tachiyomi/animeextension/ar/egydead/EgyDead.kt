@@ -32,8 +32,6 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     override val name = "Egy Dead"
 
-    // TODO: Check frequency of url changes to potentially
-    // add back overridable baseurl preference
     override val baseUrl = "https://egydead.space"
 
     override val lang = "ar"
@@ -44,7 +42,7 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
     }
 
-    // ================================== popular ==================================
+    // ================================== Popular ==================================
 
     override fun popularAnimeSelector(): String = "div.pin-posts-list li.movieItem"
 
@@ -60,9 +58,11 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         return anime
     }
 
-    // ================================== episodes ==================================
+    // ================================== Episodes ==================================
+
     override fun episodeListParse(response: Response): List<SEpisode> {
         val episodes = mutableListOf<SEpisode>()
+
         fun episodeExtract(element: Element) = SEpisode.create().apply {
             setUrlWithoutDomain(element.attr("href"))
             name = element.attr("title")
@@ -84,18 +84,19 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
                 val assemblySelector = "div.salery-list li.movieItem a"
                 episodes.addAll(document.select(assemblySelector).map(::episodeExtract))
             } else if (url.contains("serie") || url.contains("season")) {
-                if (document.select("div.seasons-list li.movieItem a").isNullOrEmpty()) {
+                // FIX 1: استبدال isNullOrEmpty بـ isEmpty لأن Jsoup دايماً يرجع List مو nullable
+                if (document.select("div.seasons-list li.movieItem a").isEmpty()) {
                     episodes.addAll(
                         document.select(episodeListSelector()).map(::episodeFromElement),
                     )
                 } else {
                     document.select("div.seasons-list li.movieItem a").map {
-                        addEpisodes(client.newCall(GET(it.attr("href"))).execute(), true)
+                        addEpisodes(client.newCall(GET(it.attr("href"), headers)).execute(), true)
                     }
                 }
             } else if (url.contains("episode")) {
                 document.selectFirst("#breadcrumbs li a[itemprop=url]")?.let {
-                    addEpisodes(client.newCall(GET(it.attr("href"))).execute())
+                    addEpisodes(client.newCall(GET(it.attr("href"), headers)).execute())
                 }
             } else {
                 val episode = SEpisode.create().apply {
@@ -104,8 +105,8 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
                 }
                 episodes.add(episode)
             }
-            // document.select(episodeListSelector()).map { episodes.add(episodeFromElement(it)) }
         }
+
         addEpisodes(response)
         return episodes
     }
@@ -115,12 +116,15 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun episodeFromElement(element: Element): SEpisode {
         val episode = SEpisode.create()
         episode.setUrlWithoutDomain(element.attr("href"))
-        episode.name = element.select("a").text()
-        episode.episode_number = element.select("a").text().filter { it.isDigit() }.toFloat()
+        // FIX 2: element نفسه هو <a>، نستخدم text() مباشرة بدل select("a").text()
+        episode.name = element.text()
+        // FIX 3: toFloatOrNull بدل toFloat() لتجنب crash لو النص مو رقم
+        episode.episode_number = element.text().filter { it.isDigit() }.toFloatOrNull() ?: 0f
         return episode
     }
 
-    // ================================== video urls ==================================
+    // ================================== Video URLs ==================================
+
     private val streamWishExtractor by lazy { StreamWishExtractor(client, headers) }
     private val doodExtractor by lazy { DoodExtractor(client) }
     private val mixDropExtractor by lazy { MixDropExtractor(client, headers) }
@@ -129,15 +133,34 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     override fun videoListParse(response: Response): List<Video> {
         val requestBody = FormBody.Builder().add("View", 1.toString()).build()
-        val newHeaders = headers.newBuilder().add("referer", "$baseUrl/").build()
-        val newResponse = client.newCall(POST(response.request.url.toString(), headers = newHeaders, body = requestBody)).execute().asJsoup()
-        return newResponse.select(videoListSelector()).parallelCatchingFlatMapBlocking(::extractVideos)
+        // FIX 4: إضافة headers كاملة مع referer صحيح
+        val newHeaders = headers.newBuilder()
+            .set("Referer", "$baseUrl/")
+            .set("X-Requested-With", "XMLHttpRequest")
+            .build()
+        val pageUrl = response.request.url.toString()
+        val newResponse = client.newCall(
+            POST(pageUrl, headers = newHeaders, body = requestBody),
+        ).execute().asJsoup()
+
+        val links = newResponse.select(videoListSelector())
+
+        // FIX 5: لو ما لقى روابط بعد POST، يحاول يجيبها من الصفحة الأصلية مباشرة
+        if (links.isEmpty()) {
+            return response.asJsoup().select(videoListSelector())
+                .parallelCatchingFlatMapBlocking(::extractVideos)
+        }
+
+        return links.parallelCatchingFlatMapBlocking(::extractVideos)
     }
 
     private fun extractVideos(link: Element): List<Video> {
         val url = link.attr("data-link")
+        // FIX 6: إضافة تحقق من الـ url مو فارغ قبل المعالجة
+        if (url.isBlank()) return emptyList()
         return when {
-            "gsfqzmqu" in url || "gsfomqu" in url || "gsfjzmqu" in url || "732eg54de642sa" in url -> streamWishExtractor.videosFromUrl(url)
+            "gsfqzmqu" in url || "gsfomqu" in url || "gsfjzmqu" in url || "732eg54de642sa" in url ->
+                streamWishExtractor.videosFromUrl(url)
             "dood" in url -> doodExtractor.videosFromUrl(url)
             "mixdrop" in url -> mixDropExtractor.videosFromUrl(url)
             "uqload" in url -> uqloadExtractor.videosFromUrl(url)
@@ -168,7 +191,6 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         val url = if (query.isNotBlank()) {
             "$baseUrl/page/$page/?s=$query"
         } else {
-            val url = baseUrl
             (if (filters.isEmpty()) getFilterList() else filters).forEach { filter ->
                 when (filter) {
                     is CategoryList -> {
@@ -178,11 +200,10 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
                             return GET(catUrl, headers)
                         }
                     }
-
                     else -> {}
                 }
             }
-            return GET(url, headers)
+            return GET(baseUrl, headers)
         }
         return GET(url, headers)
     }
@@ -198,9 +219,7 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     private data class CatUnit(val name: String, val query: String)
 
-    private val categoriesName = getCategoryList().map {
-        it.name
-    }.toTypedArray()
+    private val categoriesName = getCategoryList().map { it.name }.toTypedArray()
 
     private fun getCategoryList() = listOf(
         CatUnit("اختر القسم", ""),
@@ -233,7 +252,11 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
                 .joinToString(", ") { it.text() }
         anime.description = document.select("div.infoBox div.extra-content p").text()
         anime.status =
-            if (anime.title.contains("كامل") || anime.title.contains("فيلم")) SAnime.COMPLETED else SAnime.ONGOING
+            if (anime.title.contains("كامل") || anime.title.contains("فيلم")) {
+                SAnime.COMPLETED
+            } else {
+                SAnime.ONGOING
+            }
         return anime
     }
 
@@ -249,6 +272,7 @@ class EgyDead : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun latestUpdatesFromElement(element: Element) = popularAnimeFromElement(element)
 
     // ================================== Utilities ==================================
+
     private fun editTitle(title: String, details: Boolean = false): String {
         val movieRegex = Regex("(?:فيلم|عرض)\\s(.*?)\\s*(?:\\d{4})*\\s*(مترجم|مدبلج)")
         val seriesRegex = Regex("(?:مسلسل|برنامج|انمي)\\s(.+)\\sالحلقة\\s(\\d+)")
