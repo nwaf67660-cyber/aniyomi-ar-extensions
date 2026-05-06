@@ -100,7 +100,8 @@ class XsAnime : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     private val streamWishExtractor by lazy { StreamWishExtractor(client, headers) }
     private val vidBomExtractor by lazy { VidBomExtractor(client) }
     private val mp4uploadExtractor by lazy { Mp4uploadExtractor(client) }
-    private val mixDropExtractor by lazy { MixDropExtractor(client, headers) }
+    // التعديل هنا: حذف headers لتجنب خطأ "Too many arguments"
+    private val mixDropExtractor by lazy { MixDropExtractor(client) }
     private val voeExtractor by lazy { VoeExtractor(client) }
 
     private fun extractVideos(
