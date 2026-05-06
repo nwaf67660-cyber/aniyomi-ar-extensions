@@ -150,7 +150,9 @@ class Tuktukcinema : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     private val streamWishExtractor by lazy { StreamWishExtractor(client, headers) }
     private val vidBomExtractor by lazy { VidBomExtractor(client) }
     private val mp4uploadExtractor by lazy { Mp4uploadExtractor(client) }
-    private val mixDropExtractor by lazy { MixDropExtractor(client, headers) }
+    
+    // التعديل هنا: تم حذف headers لتوافق المكتبة الجديدة
+    private val mixDropExtractor by lazy { MixDropExtractor(client) }
     private val urlResolver by lazy { UrlResolver(client) }
 
     private fun extractVideos(
