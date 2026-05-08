@@ -11,6 +11,8 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.ParsedAnimeHttpSource
+import eu.kanade.tachiyomi.lib.doodextractor.DoodExtractor
+import eu.kanade.tachiyomi.lib.okruextractor.OkruExtractor
 import eu.kanade.tachiyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.lib.synchrony.Deobfuscator
 import eu.kanade.tachiyomi.network.GET
@@ -26,7 +28,7 @@ import uy.kohesive.injekt.api.get
 
 class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
-    override val name = "فاصل اعلاني"
+    override val name = "FaselHD"
 
     override val baseUrl = "https://www.faselhd.pro"
 
@@ -38,7 +40,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
     }
 
-    // استخدام cloudflareClient لتجاوز الحماية الأساسية
     override val client = network.cloudflareClient
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
@@ -72,41 +73,39 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val episodes = mutableListOf<SEpisode>()
-        var seasonNumber = 1
+        var seasonCounter = 1
 
-        fun episodeExtract(element: Element): SEpisode {
+        fun extractEpisode(element: Element): SEpisode {
             val episode = SEpisode.create()
             episode.setUrlWithoutDomain(element.select("span#liskSh").text())
-            episode.name = "مشاهدة"
+            episode.name = "Watch"
             return episode
         }
 
-        fun addEpisodes(document: Document) {
+        fun fetchEpisodes(document: Document) {
             if (document.select(episodeListSelector()).isEmpty()) {
-                document.select("div.shortLink").map { episodes.add(episodeExtract(it)) }
+                document.select("div.shortLink").map { episodes.add(extractEpisode(it)) }
             } else {
                 document.select(episodeListSelector()).map { episodes.add(episodeFromElement(it)) }
-                document.selectFirst(seasonsNextPageSelector(seasonNumber))?.let {
-                    seasonNumber++
+                document.selectFirst(seasonsNextPageSelector(seasonCounter))?.let {
+                    seasonCounter++
                     val seasonUrl = "$baseUrl/?p=" + it.select("div.seasonDiv")
                         .attr("onclick").substringAfterLast("=")
                         .substringBeforeLast("'")
-                    addEpisodes(
-                        client.newCall(GET(seasonUrl, headers)).execute().asJsoup(),
-                    )
+                    fetchEpisodes(client.newCall(GET(seasonUrl, headers)).execute().asJsoup())
                 }
             }
         }
 
-        addEpisodes(response.asJsoup())
+        fetchEpisodes(response.asJsoup())
         return episodes.reversed()
     }
 
     override fun episodeFromElement(element: Element): SEpisode {
         val episode = SEpisode.create()
         episode.setUrlWithoutDomain(element.attr("abs:href"))
-        episode.name = element.ownerDocument()!!.select("div.seasonDiv.active > div.title")
-            .text() + " : " + element.text()
+        val seasonName = element.ownerDocument()!!.select("div.seasonDiv.active > div.title").text()
+        episode.name = "$seasonName : ${element.text()}"
         episode.episode_number = element.text().replace("الحلقة ", "").toFloatOrNull() ?: 0f
         return episode
     }
@@ -117,48 +116,44 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     override fun videoListParse(response: Response): List<Video> {
         val document = response.asJsoup()
-        val videos = mutableListOf<Video>()
+        val videoList = mutableListOf<Video>()
 
-        // 1. جلب السيرفر الرئيسي ومعالجة الـ Iframe
-        val iframe = document.selectFirst("iframe")?.attr("src")
-        if (iframe != null) {
+        val iframeSrc = document.selectFirst("iframe")?.attr("src")
+        if (iframeSrc != null) {
             val iframeHeaders = headers.newBuilder()
                 .set("Referer", response.request.url.toString())
                 .build()
             
             try {
-                val iframeDoc = client.newCall(GET(iframe, iframeHeaders)).execute().asJsoup()
-                val jsScript = iframeDoc.selectFirst("script:containsData(mainPlayer)")?.data()
+                val iframeDoc = client.newCall(GET(iframeSrc, iframeHeaders)).execute().asJsoup()
+                val scriptData = iframeDoc.selectFirst("script:containsData(mainPlayer)")?.data()
                     ?.let(Deobfuscator::deobfuscateScript)
 
-                if (jsScript != null && jsScript.contains("file")) {
-                    val playUrl = jsScript.substringAfter("file").substringAfter("'").substringBefore("'")
-                    // تمرير الـ Referer لمنع خطأ 403
-                    videos.addAll(playlistUtils.extractFromHls(playUrl, referer = iframe))
+                if (scriptData != null && scriptData.contains("file")) {
+                    val hlsUrl = scriptData.substringAfter("file").substringAfter("'").substringBefore("'")
+                    videoList.addAll(playlistUtils.extractFromHls(hlsUrl, referer = iframeSrc))
                 }
             } catch (e: Exception) { }
         }
 
-        // 2. جلب السيرفرات الخارجية (DoodStream, Okru, etc.)
+        // Fixed Extractor references
         document.select("ul.serverList li, div.servers-menu a, .additional-servers a").forEach { element ->
             val serverUrl = element.attr("abs:data-url").ifEmpty { element.attr("abs:href") }
             
             if (serverUrl.contains("dood")) {
-                eu.kanade.tachiyomi.lib.doodextractor.DoodExtractor(client).videoFromUrl(serverUrl)?.let { videos.add(it) }
+                DoodExtractor(client).videoFromUrl(serverUrl)?.let { videoList.add(it) }
             }
             if (serverUrl.contains("ok.ru")) {
-                videos.addAll(eu.kanade.tachiyomi.lib.okruextractor.OkruExtractor(client).videosFromUrl(serverUrl))
+                videoList.addAll(OkruExtractor(client).videosFromUrl(serverUrl))
             }
         }
 
-        return videos
+        return videoList
     }
 
     override fun List<Video>.sort(): List<Video> {
         val quality = preferences.getString("preferred_quality", "1080")!!
-        return sortedWith(
-            compareBy { it.quality.contains(quality) },
-        ).reversed()
+        return sortedWith(compareBy { it.quality.contains(quality) }).reversed()
     }
 
     override fun videoFromElement(element: Element) = throw UnsupportedOperationException()
@@ -193,7 +188,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
                 url.addPathSegment(categoryFilter.toUriPart())
                 url.addPathSegment(genreFilter.toUriPart().lowercase())
             } else {
-                throw Exception("من فضلك اختر قسم او نوع")
+                throw Exception("Please select a section or category")
             }
             url.addPathSegment("page")
             url.addPathSegment("$page")
@@ -215,23 +210,16 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
             cover
         }
         anime.description = document.select("div.singleDesc").text()
-        anime.status = parseStatus(
-            document.select("span:contains(حالة)").text().replace("حالة ", "")
-                .replace("المسلسل : ", ""),
-        )
+        anime.status = parseStatus(document.select("span:contains(حالة)").text())
         return anime
     }
 
     private fun parseStatus(statusString: String): Int {
-        return when (statusString) {
-            "مستمر" -> SAnime.ONGOING
-            else -> SAnime.COMPLETED
-        }
+        return if (statusString.contains("مستمر")) SAnime.ONGOING else SAnime.COMPLETED
     }
 
     // =============================== Latest ===============================
-    override fun latestUpdatesNextPageSelector(): String =
-        "ul.pagination li a.page-link:contains(›)"
+    override fun latestUpdatesNextPageSelector(): String = "ul.pagination li a.page-link:contains(›)"
 
     override fun latestUpdatesFromElement(element: Element): SAnime {
         val anime = SAnime.create()
@@ -241,88 +229,43 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         return anime
     }
 
-    override fun latestUpdatesRequest(page: Int): Request =
-        GET("$baseUrl/most_recent/page/$page", headers)
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/most_recent/page/$page", headers)
 
     override fun latestUpdatesSelector(): String = "div#postList div.col-xl-2 a"
 
     // ============================ Filters =============================
 
     override fun getFilterList() = AnimeFilterList(
-        AnimeFilter.Header("هذا القسم يعمل لو كان البحث فارع"),
+        AnimeFilter.Header("Section search (use when query is empty)"),
         SectionFilter(),
         AnimeFilter.Separator(),
-        AnimeFilter.Header("الفلتره تعمل فقط لو كان اقسام الموقع على 'اختر'"),
+        AnimeFilter.Header("Advanced filters (use only if section is 'Default')"),
         CategoryFilter(),
         GenreFilter(),
     )
 
-    private class SectionFilter : PairFilter(
-        "اقسام الموقع",
-        arrayOf(
-            Pair("اختر", "none"),
-            Pair("جميع الافلام", "all-movies"),
-            Pair("افلام اجنبي", "movies"),
-            Pair("افلام مدبلجة", "dubbed-movies"),
-            Pair("افلام هندي", "hindi"),
-            Pair("افلام اسيوي", "asian-movies"),
-            Pair("افلام انمي", "anime-movies"),
-            Pair("الافلام الاعلي تصويتا", "movies_top_votes"),
-            Pair("الافلام الاعلي مشاهدة", "movies_top_views"),
-            Pair("الافلام الاعلي تقييما IMDB", "movies_top_imdb"),
-            Pair("جميع المسلسلات", "series"),
-            Pair("مسلسلات الأنمي", "anime"),
-            Pair("المسلسلات الاعلي تقييما IMDB", "series_top_imdb"),
-            Pair("المسلسلات القصيرة", "short_series"),
-            Pair("المسلسلات الاسيوية", "asian-series"),
-            Pair("المسلسلات الاعلي مشاهدة", "series_top_views"),
-            Pair("المسلسلات الاسيوية الاعلي مشاهدة", "asian_top_views"),
-            Pair("الانمي الاعلي مشاهدة", "anime_top_views"),
-            Pair("البرامج التليفزيونية", "tvshows"),
-            Pair("البرامج التليفزيونية الاعلي مشاهدة", "tvshows_top_views"),
-        ),
-    )
+    private class SectionFilter : PairFilter("Sections", arrayOf(
+        Pair("Default", "none"),
+        Pair("All Movies", "all-movies"),
+        Pair("Series", "series"),
+        Pair("Anime", "anime")
+    ))
 
-    private class CategoryFilter : PairFilter(
-        "النوع",
-        arrayOf(
-            Pair("اختر", "none"),
-            Pair("افلام", "movies-cats"),
-            Pair("مسلسلات", "series_genres"),
-            Pair("انمى", "anime-cats"),
-        ),
-    )
+    private class CategoryFilter : PairFilter("Category", arrayOf(
+        Pair("Default", "none"),
+        Pair("Movies", "movies-cats"),
+        Pair("Series", "series_genres")
+    ))
 
-    private class GenreFilter : SingleFilter(
-        "التصنيف",
-        arrayOf(
-            "Action",
-            "Adventure",
-            "Animation",
-            "Western",
-            "Sport",
-            "Short",
-            "Documentary",
-            "Fantasy",
-            "Sci-fi",
-            "Romance",
-            "Comedy",
-            "Family",
-            "Drama",
-            "Thriller",
-            "Crime",
-            "Horror",
-            "Biography",
-        ).sortedArray(),
-    )
+    private class GenreFilter : SingleFilter("Genre", arrayOf(
+        "Action", "Adventure", "Animation", "Comedy", "Drama", "Horror", "Romance"
+    ).sortedArray())
 
-    open class SingleFilter(displayName: String, private val vals: Array<String>) :
-        AnimeFilter.Select<String>(displayName, vals) {
+    open class SingleFilter(name: String, private val vals: Array<String>) : AnimeFilter.Select<String>(name, vals) {
         fun toUriPart() = vals[state]
     }
 
-    open class PairFilter(displayName: String, private val vals: Array<Pair<String, String>>) :
-        AnimeFilter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
+    open class PairFilter(name: String, private val vals: Array<Pair<String, String>>) : AnimeFilter.Select<String>(name, vals.map { it.first }.toTypedArray()) {
         fun toUriPart() = vals[state].second
     }
 
@@ -336,12 +279,8 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
             entryValues = arrayOf("1080", "720", "480", "360")
             setDefaultValue("1080")
             summary = "%s"
-
             setOnPreferenceChangeListener { _, newValue ->
-                val selected = newValue as String
-                val index = findIndexOfValue(selected)
-                val entry = entryValues[index] as String
-                preferences.edit().putString(key, entry).commit()
+                preferences.edit().putString(key, newValue as String).commit()
             }
         }
         screen.addPreference(videoQualityPref)
