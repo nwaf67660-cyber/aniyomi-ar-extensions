@@ -38,7 +38,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
     }
 
-    // FIX 1: استخدام cloudflareClient بدل client العادي لتجاوز حماية Cloudflare
+    // استخدام cloudflareClient لتجاوز الحماية الأساسية
     override val client = network.cloudflareClient
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
@@ -46,6 +46,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun headersBuilder(): Headers.Builder {
         return super.headersBuilder()
             .add("Referer", baseUrl)
+            .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
     }
 
     // ============================== Popular ===============================
@@ -87,7 +88,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
                 document.select(episodeListSelector()).map { episodes.add(episodeFromElement(it)) }
                 document.selectFirst(seasonsNextPageSelector(seasonNumber))?.let {
                     seasonNumber++
-                    // FIX 2: إضافة headers للطلب لتجنب رفض الخادم
                     val seasonUrl = "$baseUrl/?p=" + it.select("div.seasonDiv")
                         .attr("onclick").substringAfterLast("=")
                         .substringBeforeLast("'")
@@ -107,7 +107,6 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         episode.setUrlWithoutDomain(element.attr("abs:href"))
         episode.name = element.ownerDocument()!!.select("div.seasonDiv.active > div.title")
             .text() + " : " + element.text()
-        // FIX 3: معالجة خطأ toFloat() لو النص مو رقم
         episode.episode_number = element.text().replace("الحلقة ", "").toFloatOrNull() ?: 0f
         return episode
     }
@@ -118,21 +117,41 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     override fun videoListParse(response: Response): List<Video> {
         val document = response.asJsoup()
-        val iframe = document.selectFirst("iframe")!!.attr("src")
+        val videos = mutableListOf<Video>()
 
-        // FIX 4: إضافة Referer header لطلب الـ iframe حتى لا يرفضه الخادم
-        val iframeHeaders = headers.newBuilder()
-            .set("Referer", response.request.url.toString())
-            .build()
-        val iframeDoc = client.newCall(GET(iframe, iframeHeaders)).execute().asJsoup()
+        // 1. جلب السيرفر الرئيسي ومعالجة الـ Iframe
+        val iframe = document.selectFirst("iframe")?.attr("src")
+        if (iframe != null) {
+            val iframeHeaders = headers.newBuilder()
+                .set("Referer", response.request.url.toString())
+                .build()
+            
+            try {
+                val iframeDoc = client.newCall(GET(iframe, iframeHeaders)).execute().asJsoup()
+                val jsScript = iframeDoc.selectFirst("script:containsData(mainPlayer)")?.data()
+                    ?.let(Deobfuscator::deobfuscateScript)
 
-        val jsScript = iframeDoc.selectFirst("script:containsData(mainPlayer)")
-            ?.data()
-            ?.let(Deobfuscator::deobfuscateScript)
-            ?: return emptyList() // FIX 5: بدل !! الذي يكسر التطبيق لو ما وجد السكريبت
+                if (jsScript != null && jsScript.contains("file")) {
+                    val playUrl = jsScript.substringAfter("file").substringAfter("'").substringBefore("'")
+                    // تمرير الـ Referer لمنع خطأ 403
+                    videos.addAll(playlistUtils.extractFromHls(playUrl, referer = iframe))
+                }
+            } catch (e: Exception) { }
+        }
 
-        val playUrl = jsScript.substringAfter("file").substringAfter("'").substringBefore("'")
-        return playlistUtils.extractFromHls(playUrl)
+        // 2. جلب السيرفرات الخارجية (DoodStream, Okru, etc.)
+        document.select("ul.serverList li, div.servers-menu a, .additional-servers a").forEach { element ->
+            val serverUrl = element.attr("abs:data-url").ifEmpty { element.attr("abs:href") }
+            
+            if (serverUrl.contains("dood")) {
+                eu.kanade.tachiyomi.lib.doodextractor.DoodExtractor(client).videoFromUrl(serverUrl)?.let { videos.add(it) }
+            }
+            if (serverUrl.contains("ok.ru")) {
+                videos.addAll(eu.kanade.tachiyomi.lib.okruextractor.OkruExtractor(client).videosFromUrl(serverUrl))
+            }
+        }
+
+        return videos
     }
 
     override fun List<Video>.sort(): List<Video> {
