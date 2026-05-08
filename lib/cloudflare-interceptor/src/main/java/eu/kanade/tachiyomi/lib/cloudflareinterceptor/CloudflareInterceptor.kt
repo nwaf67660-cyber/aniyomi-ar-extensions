@@ -29,6 +29,7 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
         val originalRequest = chain.request()
         val originalResponse = chain.proceed(chain.request())
 
+        // Check if the response indicates a Cloudflare challenge (403 or 503)
         if (!(originalResponse.code in ERROR_CODES && originalResponse.header("Server") in SERVER_CHECK)) {
             return originalResponse
         }
@@ -50,7 +51,7 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
     @SuppressLint("SetJavaScriptEnabled")
     fun resolveWithWebView(request: Request, client: OkHttpClient): Request {
         val latch = CountDownLatch(1)
-        val jsinterface = CloudflareJSI(latch)
+        val jsInterface = CloudflareJSI(latch)
         var webView: WebView? = null
 
         val origRequestUrl = request.url.toString()
@@ -65,13 +66,14 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
                 databaseEnabled = true
                 useWideViewPort = true
                 loadWithOverviewMode = false
-                // اختيار عشوائي ذكي في كل طلب
+                // Randomly select a User-Agent for each request to avoid fingerprinting
                 userAgentString = USER_AGENTS.random()
             }
 
-            webview.addJavascriptInterface(jsinterface, "CloudflareJSI")
+            webview.addJavascriptInterface(jsInterface, "CloudflareJSI")
             webview.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
+                    // Inject the auto-click script when the page finishes loading
                     view?.evaluateJavascript(CHECK_SCRIPT) {}
                 }
             }
@@ -79,6 +81,7 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
             webview.loadUrl(origRequestUrl, headers)
         }
 
+        // Wait for the challenge to be solved or timeout after 45 seconds
         latch.await(45, TimeUnit.SECONDS)
 
         handler.post {
@@ -95,8 +98,8 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
 
         cookies.forEach {
             client.cookieJar.saveFromResponse(
-                url = HttpUrl.Builder().scheme("http").host(it.domain).build(),
-                cookies = cookies,
+                url = HttpUrl.Builder().scheme("https").host(it.domain).build(),
+                cookies = listOf(it),
             )
         }
 
@@ -128,28 +131,45 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
             "Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
-            "Mozilla/5.0 (iPad; CPU OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
-            "Mozilla/5.0 (Android 14; Mobile; rv:125.0) Gecko/125.0 Firefox/125.0",
-            "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
 
         private val CHECK_SCRIPT by lazy {
             """
-            setInterval(() => {
-                if (document.querySelector("#challenge-form") != null) {
-                    const simpleChallenge = document.querySelector("#challenge-stage > div > input[type='button']")
-                    if (simpleChallenge != null) simpleChallenge.click()
-                    const turnstile = document.querySelector("div.hcaptcha-box > iframe")
-                    if (turnstile != null) {
-                        const button = turnstile.contentWindow.document.querySelector("input[type='checkbox']")
-                        if (button != null) button.click()
+            (function() {
+                const performCheck = (context) => {
+                    // Check for common Cloudflare challenge elements
+                    if (context.querySelector("#challenge-form, #challenge-stage, .ray_id")) {
+                        // Try clicking the simple challenge button if it exists
+                        const challengeBtn = context.querySelector("#challenge-stage input[type='button'], #security-button");
+                        if (challengeBtn) challengeBtn.click();
+
+                        // Search and click checkboxes inside Iframes (Turnstile/hCaptcha)
+                        context.querySelectorAll("iframe").forEach(iframe => {
+                            try {
+                                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                                if (iframeDoc) {
+                                    const checkbox = iframeDoc.querySelector("input[type='checkbox']");
+                                    if (checkbox) checkbox.click();
+                                }
+                            } catch (e) {
+                                // Ignore Cross-Origin access errors
+                            }
+                        });
+                        return true;
                     }
-                } else {
-                    CloudflareJSI.leave()
-                }
-            }, 2500)
+                    return false;
+                };
+
+                // Run check every 2 seconds
+                const checkTimer = setInterval(() => {
+                    if (!performCheck(document)) {
+                        // If no more challenge elements found, leave the WebView
+                        CloudflareJSI.leave();
+                        clearInterval(checkTimer);
+                    }
+                }, 2000);
+            })();
             """.trimIndent()
         }
     }
