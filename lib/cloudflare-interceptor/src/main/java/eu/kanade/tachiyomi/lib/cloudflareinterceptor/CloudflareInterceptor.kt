@@ -1,176 +1,111 @@
-package eu.kanade.tachiyomi.lib.cloudflareinterceptor
+package eu.kanade.tachiyomi.extension.vi.yurigarden
 
 import android.annotation.SuppressLint
 import android.app.Application
 import android.os.Handler
 import android.os.Looper
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import okhttp3.Cookie
-import okhttp3.HttpUrl
-import okhttp3.Interceptor
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
+import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import uy.kohesive.injekt.injectLazy
-import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
-    private val context: Application by injectLazy()
-    private val handler by lazy { Handler(Looper.getMainLooper()) }
+/**
 
-    @Synchronized
-    override fun intercept(chain: Interceptor.Chain): Response {
-        val originalRequest = chain.request()
-        val originalResponse = chain.proceed(chain.request())
+Solves a Cloudflare Turnstile / challenge page by loading the target URL in a
 
-        // Check if the response indicates a Cloudflare challenge (403 or 503)
-        if (!(originalResponse.code in ERROR_CODES && originalResponse.header("Server") in SERVER_CHECK)) {
-            return originalResponse
-        }
+hidden, fully-laid-out [WebView]. Turnstile fingerprints the rendering pipeline
 
-        return try {
-            originalResponse.close()
-            val request = resolveWithWebView(originalRequest, client)
-            chain.proceed(request)
-        } catch (e: Exception) {
-            throw IOException(e)
-        }
-    }
+(screen/canvas size), so the view is forced to a realistic layout to let the
 
-    class CloudflareJSI(private val latch: CountDownLatch) {
-        @JavascriptInterface
-        fun leave() = latch.countDown()
-    }
+invisible/managed widget auto-solve in most cases.
 
-    @SuppressLint("SetJavaScriptEnabled")
-    fun resolveWithWebView(request: Request, client: OkHttpClient): Request {
-        val latch = CountDownLatch(1)
-        val jsInterface = CloudflareJSI(latch)
-        var webView: WebView? = null
+On success the cf_clearance cookie is set in the shared [CookieManager], which
 
-        val origRequestUrl = request.url.toString()
-        val headers = request.headers.toMultimap().mapValues { it.value.getOrNull(0) ?: "" }.toMutableMap()
+is picked up by the OkHttp cookie jar on subsequent requests.
+*/
+object CloudflareResolver {
 
-        handler.post {
-            val webview = WebView(context)
-            webView = webview
-            with(webview.settings) {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                databaseEnabled = true
-                useWideViewPort = true
-                loadWithOverviewMode = false
-                // Randomly select a User-Agent for each request to avoid fingerprinting
-                userAgentString = USER_AGENTS.random()
-            }
+private const val TIMEOUT_SECONDS = 45L
+private const val POLL_INTERVAL_MS = 500L
+private const val WEBVIEW_WIDTH = 1080
+private const val WEBVIEW_HEIGHT = 1920
+private const val CLEARANCE_COOKIE = "cf_clearance"
 
-            webview.addJavascriptInterface(jsInterface, "CloudflareJSI")
-            webview.webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    // Inject the auto-click script when the page finishes loading
-                    view?.evaluateJavascript(CHECK_SCRIPT) {}
-                }
-            }
+@Synchronized
+@SuppressLint("SetJavaScriptEnabled")
+fun resolve(loadUrl: String, cookieUrl: String = loadUrl, userAgent: String? = null): Boolean {
+val cookieManager = CookieManager.getInstance()
+if (hasClearance(cookieManager, cookieUrl)) return true
 
-            webview.loadUrl(origRequestUrl, headers)
-        }
+val context = Injekt.get<Application>()  
+ val handler = Handler(Looper.getMainLooper())  
+ val latch = CountDownLatch(1)  
+ var webView: WebView? = null  
+ lateinit var poll: Runnable  
 
-        // Wait for the challenge to be solved or timeout after 45 seconds
-        latch.await(45, TimeUnit.SECONDS)
+ handler.post {  
+     val wv = WebView(context)  
+     webView = wv  
 
-        handler.post {
-            webView?.stopLoading()
-            webView?.destroy()
-            webView = null
-        }
+     wv.layoutParams = ViewGroup.LayoutParams(WEBVIEW_WIDTH, WEBVIEW_HEIGHT)  
+     wv.measure(  
+         View.MeasureSpec.makeMeasureSpec(WEBVIEW_WIDTH, View.MeasureSpec.EXACTLY),  
+         View.MeasureSpec.makeMeasureSpec(WEBVIEW_HEIGHT, View.MeasureSpec.EXACTLY),  
+     )  
+     wv.layout(0, 0, WEBVIEW_WIDTH, WEBVIEW_HEIGHT)  
 
-        val cookies = CookieManager.getInstance()
-            ?.getCookie(origRequestUrl)
-            ?.split(";")
-            ?.mapNotNull { Cookie.parse(request.url, it) }
-            ?: emptyList<Cookie>()
+     with(wv.settings) {  
+         javaScriptEnabled = true  
+         domStorageEnabled = true  
+         databaseEnabled = true  
+         loadWithOverviewMode = true  
+         useWideViewPort = true  
+         blockNetworkImage = false  
+         mediaPlaybackRequiresUserGesture = false  
+         // cf_clearance is bound to the UA that solved it; keep both sides aligned.  
+         if (!userAgent.isNullOrBlank()) userAgentString = userAgent  
+     }  
 
-        cookies.forEach {
-            client.cookieJar.saveFromResponse(
-                url = HttpUrl.Builder().scheme("https").host(it.domain).build(),
-                cookies = listOf(it),
-            )
-        }
+     cookieManager.setAcceptCookie(true)  
+     cookieManager.setAcceptThirdPartyCookies(wv, true)  
 
-        return createRequestWithCookies(request, cookies)
-    }
+     wv.webViewClient = WebViewClient()  
 
-    private fun createRequestWithCookies(request: Request, cookies: List<Cookie>): Request {
-        val convertedForThisRequest = cookies.filter { it.matches(request.url) }
-        val existingCookies = Cookie.parseAll(request.url, request.headers)
-        val filteredExisting = existingCookies.filter { existing ->
-            convertedForThisRequest.none { converted -> converted.name == existing.name }
-        }
+     poll = Runnable {  
+         if (latch.count == 0L) return@Runnable  
+         if (hasClearance(cookieManager, cookieUrl)) {  
+             latch.countDown()  
+         } else {  
+             handler.postDelayed(poll, POLL_INTERVAL_MS)  
+         }  
+     }  
 
-        val newCookies = filteredExisting + convertedForThisRequest
-        return request.newBuilder()
-            .header("Cookie", newCookies.joinToString("; ") { "${it.name}=${it.value}" })
-            .build()
-    }
+     wv.loadUrl(loadUrl)  
+     handler.postDelayed(poll, POLL_INTERVAL_MS)  
+ }  
 
-    companion object {
-        private val ERROR_CODES = listOf(403, 503)
-        private val SERVER_CHECK = arrayOf("cloudflare-nginx", "cloudflare")
+ latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)  
 
-        private val USER_AGENTS = listOf(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
-            "Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
+ handler.post {  
+     handler.removeCallbacks(poll)  
+     webView?.stopLoading()  
+     webView?.destroy()  
+ }  
 
-        private val CHECK_SCRIPT by lazy {
-            """
-            (function() {
-                const performCheck = (context) => {
-                    // Check for common Cloudflare challenge elements
-                    if (context.querySelector("#challenge-form, #challenge-stage, .ray_id")) {
-                        // Try clicking the simple challenge button if it exists
-                        const challengeBtn = context.querySelector("#challenge-stage input[type='button'], #security-button");
-                        if (challengeBtn) challengeBtn.click();
+ return hasClearance(cookieManager, cookieUrl)
 
-                        // Search and click checkboxes inside Iframes (Turnstile/hCaptcha)
-                        context.querySelectorAll("iframe").forEach(iframe => {
-                            try {
-                                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-                                if (iframeDoc) {
-                                    const checkbox = iframeDoc.querySelector("input[type='checkbox']");
-                                    if (checkbox) checkbox.click();
-                                }
-                            } catch (e) {
-                                // Ignore Cross-Origin access errors
-                            }
-                        });
-                        return true;
-                    }
-                    return false;
-                };
-
-                // Run check every 2 seconds
-                const checkTimer = setInterval(() => {
-                    if (!performCheck(document)) {
-                        // If no more challenge elements found, leave the WebView
-                        CloudflareJSI.leave();
-                        clearInterval(checkTimer);
-                    }
-                }, 2000);
-            })();
-            """.trimIndent()
-        }
-    }
 }
+
+private fun hasClearance(cookieManager: CookieManager, url: String): Boolean {
+val cookies = cookieManager.getCookie(url) ?: return false
+return cookies.split(';').any { it.trim().startsWith("$CLEARANCE_COOKIE=") }
+}
+}
+
+
+وش يسوي ذا
