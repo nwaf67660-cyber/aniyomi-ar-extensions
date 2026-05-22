@@ -106,6 +106,3 @@ val cookies = cookieManager.getCookie(url) ?: return false
 return cookies.split(';').any { it.trim().startsWith("$CLEARANCE_COOKIE=") }
 }
 }
-
-
-وش يسوي ذا
