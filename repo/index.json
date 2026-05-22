@@ -222,6 +222,26 @@
   {
     "name": "Aniyomi: FASELHD",
     "pkg": "eu.kanade.tachiyomi.animeextension.ar.faselhd",
+    "apk": "aniyomi-ar.faselhd-v14.6-debug.apk",
+    "lang": "ar",
+    "code": 6,
+    "version": "14.6",
+    "nsfw": 0,
+    "hasReadme": 0,
+    "hasChangelog": 0,
+    "sources": [
+      {
+        "name": "فاصل اعلاني",
+        "lang": "ar",
+        "id": "1378291029586884571",
+        "baseUrl": "https://www.faselhd.pro",
+        "versionId": 1
+      }
+    ]
+  },
+  {
+    "name": "Aniyomi: FASELHD",
+    "pkg": "eu.kanade.tachiyomi.animeextension.ar.faselhd",
     "apk": "aniyomi-ar.faselhd-v14.4-debug.apk",
     "lang": "ar",
     "code": 4,
@@ -231,10 +251,10 @@
     "hasChangelog": 0,
     "sources": [
       {
-        "name": "FaselHD",
+        "name": "فاصل اعلاني",
         "lang": "ar",
-        "id": "9141222140570062367",
-        "baseUrl": "https://faselhd.rip",
+        "id": "1378291029586884571",
+        "baseUrl": "https://www.faselhd.pro",
         "versionId": 1
       }
     ]
@@ -251,30 +271,10 @@
     "hasChangelog": 0,
     "sources": [
       {
-        "name": "FaselHD",
+        "name": "فاصل اعلاني",
         "lang": "ar",
-        "id": "9141222140570062367",
-        "baseUrl": "https://faselhd.rip",
-        "versionId": 1
-      }
-    ]
-  },
-  {
-    "name": "Aniyomi: FASELHD",
-    "pkg": "eu.kanade.tachiyomi.animeextension.ar.faselhd",
-    "apk": "aniyomi-ar.faselhd-v14.6-debug.apk",
-    "lang": "ar",
-    "code": 6,
-    "version": "14.6",
-    "nsfw": 0,
-    "hasReadme": 0,
-    "hasChangelog": 0,
-    "sources": [
-      {
-        "name": "FaselHD",
-        "lang": "ar",
-        "id": "9141222140570062367",
-        "baseUrl": "https://faselhd.rip",
+        "id": "1378291029586884571",
+        "baseUrl": "https://www.faselhd.pro",
         "versionId": 1
       }
     ]
