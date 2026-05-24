@@ -85,17 +85,35 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         }
 
         fun addEpisodes(document: Document) {
-            if (document.select(episodeListSelector()).isNullOrEmpty()) {
-                document.select("div.shortLink").map { episodes.add(episodeExtract(it)) }
-            } else {
-                document.select(episodeListSelector()).map { episodes.add(episodeFromElement(it)) }
-                document.selectFirst(seasonsNextPageSelector(seasonNumber))?.let {
-                    seasonNumber++
-                    val seasonUrl = "$baseUrl/?p=" + it.select("div.seasonDiv")
-                        .attr("onclick").substringAfterLast("=")
-                        .substringBeforeLast("'")
-                    addEpisodes(client.newCall(GET(seasonUrl, headers)).execute().asJsoup())
+            try {
+                if (document.select(episodeListSelector()).isNullOrEmpty()) {
+                    document.select("div.shortLink").map { episodes.add(episodeExtract(it)) }
+                } else {
+                    document.select(episodeListSelector()).map { episodes.add(episodeFromElement(it)) }
+                    document.selectFirst(seasonsNextPageSelector(seasonNumber))?.let {
+                        seasonNumber++
+                        val onClickAttr = it.select("div.seasonDiv").attr("onclick")
+                        if (onClickAttr.isNotEmpty()) {
+                            val seasonId = onClickAttr.substringAfterLast("=")
+                                .substringBeforeLast("'")
+                                .trim()
+                            if (seasonId.isNotEmpty()) {
+                                try {
+                                    val seasonUrl = "$baseUrl/?p=$seasonId"
+                                    val seasonResponse = client.newCall(GET(seasonUrl, headers)).execute()
+                                    if (seasonResponse.isSuccessful) {
+                                        addEpisodes(seasonResponse.asJsoup())
+                                    }
+                                    seasonResponse.close()
+                                } catch (e: Exception) {
+                                    // Skip season on error
+                                }
+                            }
+                        }
+                    }
                 }
+            } catch (e: Exception) {
+                // Continue with collected episodes
             }
         }
 
@@ -106,7 +124,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun episodeFromElement(element: Element): SEpisode {
         val episode = SEpisode.create()
         episode.setUrlWithoutDomain(element.attr("abs:href"))
-        val seasonTitle = element.ownerDocument()!!.select("div.seasonDiv.active > div.title").text()
+        val seasonTitle = element.ownerDocument()?.select("div.seasonDiv.active > div.title")?.text() ?: ""
         episode.name = if (seasonTitle.isNotEmpty()) "$seasonTitle : ${element.text()}" else element.text()
         episode.episode_number = element.text().replace("الحلقة ", "").toFloatOrNull() ?: 0f
         return episode
@@ -157,7 +175,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         val genreFilter = filterList.find { it is GenreFilter } as GenreFilter
         
         return if (query.isNotBlank()) {
-            GET("$baseUrl/page/$page?s=$query", headers)
+            GET("$baseUrl/search/${query.replace(" ", "+")}/page/$page", headers)
         } else {
             val url = "$baseUrl/".toHttpUrlOrNull()!!.newBuilder()
             if (sectionFilter.state != 0) {
