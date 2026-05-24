@@ -70,54 +70,52 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     // ============================== Episodes ==============================
     override fun episodeListSelector() = "div.epAll a"
 
-    private fun seasonsNextPageSelector(seasonNumber: Int) =
-        "div#seasonList div.col-xl-2:nth-child($seasonNumber)"
-
     override fun episodeListParse(response: Response): List<SEpisode> {
         val episodes = mutableListOf<SEpisode>()
-        var seasonNumber = 1
-        
-        fun episodeExtract(element: Element): SEpisode {
-            val episode = SEpisode.create()
-            episode.setUrlWithoutDomain(element.select("span#liskSh").text())
-            episode.name = "Watch"
-            return episode
-        }
 
-        fun addEpisodes(document: Document) {
+        fun addEpisodes(res: Response) {
             try {
-                if (document.select(episodeListSelector()).isNullOrEmpty()) {
-                    document.select("div.shortLink").map { episodes.add(episodeExtract(it)) }
-                } else {
-                    document.select(episodeListSelector()).map { episodes.add(episodeFromElement(it)) }
-                    document.selectFirst(seasonsNextPageSelector(seasonNumber))?.let {
-                        seasonNumber++
-                        val onClickAttr = it.select("div.seasonDiv").attr("onclick")
-                        if (onClickAttr.isNotEmpty()) {
-                            val seasonId = onClickAttr.substringAfterLast("=")
-                                .substringBeforeLast("'")
-                                .trim()
-                            if (seasonId.isNotEmpty()) {
-                                try {
-                                    val seasonUrl = "$baseUrl/?p=$seasonId"
-                                    val seasonResponse = client.newCall(GET(seasonUrl, headers)).execute()
-                                    if (seasonResponse.isSuccessful) {
-                                        addEpisodes(seasonResponse.asJsoup())
-                                    }
-                                    seasonResponse.close()
-                                } catch (e: Exception) {
-                                    // Skip season on error
+                val document = res.asJsoup()
+                val url = res.request.url.toString()
+
+                // جلب الحلقات العادية
+                document.select(episodeListSelector()).forEach { element ->
+                    episodes.add(episodeFromElement(element))
+                }
+
+                // جلب المواسم الأخرى
+                var seasonNumber = 1
+                while (true) {
+                    val seasonSelector = "div#seasonList div.col-xl-2:nth-child($seasonNumber)"
+                    val seasonElement = document.selectFirst(seasonSelector) ?: break
+                    
+                    val onClickAttr = seasonElement.select("div.seasonDiv").attr("onclick")
+                    if (onClickAttr.isNotEmpty()) {
+                        val seasonId = onClickAttr.substringAfterLast("=")
+                            .substringBeforeLast("'")
+                            .trim()
+                        
+                        if (seasonId.isNotEmpty()) {
+                            try {
+                                val seasonUrl = "$baseUrl/?p=$seasonId"
+                                val seasonResponse = client.newCall(GET(seasonUrl, headers)).execute()
+                                if (seasonResponse.isSuccessful) {
+                                    addEpisodes(seasonResponse)
                                 }
+                                seasonResponse.close()
+                            } catch (e: Exception) {
+                                // تخطي الموسم عند الخطأ
                             }
                         }
                     }
+                    seasonNumber++
                 }
             } catch (e: Exception) {
-                // Continue with collected episodes
+                // تابع مع الحلقات المجمعة
             }
         }
 
-        addEpisodes(response.asJsoup())
+        addEpisodes(response)
         return episodes.reversed()
     }
 
@@ -141,11 +139,15 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         return response.asJsoup().select(videoListSelector()).parallelCatchingFlatMapBlocking { element ->
             val url = onClickRegex.find(element.attr("onclick"))?.groupValues?.get(1) ?: ""
             if (url.isNotEmpty()) {
-                val doc = client.newCall(GET(url, headers)).execute().asJsoup()
-                val script = doc.selectFirst("script:containsData(video), script:containsData(mainPlayer)")?.data()
-                    ?.let(Deobfuscator::deobfuscateScript) ?: ""
-                val playlist = videoRegex.find(script)?.value
-                playlist?.let { playlistUtils.extractFromHls(it, referer = url) } ?: emptyList()
+                try {
+                    val doc = client.newCall(GET(url, headers)).execute().asJsoup()
+                    val script = doc.selectFirst("script:containsData(video), script:containsData(mainPlayer)")?.data()
+                        ?.let(Deobfuscator::deobfuscateScript) ?: ""
+                    val playlist = videoRegex.find(script)?.value
+                    playlist?.let { playlistUtils.extractFromHls(it, referer = url) } ?: emptyList()
+                } catch (e: Exception) {
+                    emptyList()
+                }
             } else {
                 emptyList()
             }
@@ -162,7 +164,7 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun videoUrlParse(document: Document) = throw UnsupportedOperationException()
 
     // =============================== Search ===============================
-override fun searchAnimeNextPageSelector(): String = "div.pagination-two a:contains(›)"
+    override fun searchAnimeNextPageSelector(): String = "div.pagination-two a:contains(›)"
 
     override fun searchAnimeSelector(): String = "div.catHolder li.movieItem"
 
@@ -187,7 +189,7 @@ override fun searchAnimeNextPageSelector(): String = "div.pagination-two a:conta
         return GET(url, headers)
     }
 
-    override fun searchAnimeFromElement(element: Element) = popularAnimeFromElement(element)
+    override fun searchAnimeFromElement(element: Element): SAnime = popularAnimeFromElement(element)
 
     override fun getFilterList() = AnimeFilterList(
         CategoryList(categoriesName),
@@ -248,42 +250,6 @@ override fun searchAnimeNextPageSelector(): String = "div.pagination-two a:conta
     override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/most_recent/page/$page", headers)
 
     override fun latestUpdatesSelector(): String = popularAnimeSelector()
-
-    // ============================ Filters =============================
-
-    override fun getFilterList() = AnimeFilterList(
-        AnimeFilter.Header("Section search (used when query is empty)"),
-        SectionFilter(),
-        AnimeFilter.Separator(),
-        AnimeFilter.Header("Category filters (works if section is 'Default')"),
-        CategoryFilter(),
-        GenreFilter(),
-    )
-
-    private class SectionFilter : PairFilter("Sections", arrayOf(
-        Pair("Default", "none"),
-        Pair("All Movies", "all-movies"),
-        Pair("Series", "series"),
-        Pair("Anime", "anime")
-    ))
-
-    private class CategoryFilter : PairFilter("Category", arrayOf(
-        Pair("Default", "none"),
-        Pair("Movies", "movies-cats"),
-        Pair("Series", "series_genres")
-    ))
-
-    private class GenreFilter : SingleFilter("Genre", arrayOf(
-        "Action", "Adventure", "Animation", "Comedy", "Drama", "Horror", "Romance", "Sci-fi", "Thriller"
-    ).sortedArray())
-
-    open class SingleFilter(name: String, private val vals: Array<String>) : AnimeFilter.Select<String>(name, vals) {
-        fun toUriPart() = vals[state]
-    }
-
-    open class PairFilter(name: String, private val vals: Array<Pair<String, String>>) : AnimeFilter.Select<String>(name, vals.map { it.first }.toTypedArray()) {
-        fun toUriPart() = vals[state].second
-    }
 
     // ========================= Preferences ================================
 
