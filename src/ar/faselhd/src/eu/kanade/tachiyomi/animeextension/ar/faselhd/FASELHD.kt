@@ -162,35 +162,61 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
     override fun videoUrlParse(document: Document) = throw UnsupportedOperationException()
 
     // =============================== Search ===============================
-    override fun searchAnimeFromElement(element: Element): SAnime = popularAnimeFromElement(element)
+override fun searchAnimeNextPageSelector(): String = "div.pagination-two a:contains(›)"
 
-    override fun searchAnimeNextPageSelector(): String = popularAnimeNextPageSelector()
-
-    override fun searchAnimeSelector(): String = popularAnimeSelector()
+    override fun searchAnimeSelector(): String = "div.catHolder li.movieItem"
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        val filterList = if (filters.isEmpty()) getFilterList() else filters
-        val sectionFilter = filterList.find { it is SectionFilter } as SectionFilter
-        val categoryFilter = filterList.find { it is CategoryFilter } as CategoryFilter
-        val genreFilter = filterList.find { it is GenreFilter } as GenreFilter
-        
-        return if (query.isNotBlank()) {
-            GET("$baseUrl/search/${query.replace(" ", "+")}/page/$page", headers)
+        val url = if (query.isNotBlank()) {
+            "$baseUrl/page/$page/?s=$query"
         } else {
-            val url = "$baseUrl/".toHttpUrlOrNull()!!.newBuilder()
-            if (sectionFilter.state != 0) {
-                url.addPathSegment(sectionFilter.toUriPart())
-            } else if (categoryFilter.state != 0) {
-                url.addPathSegment(categoryFilter.toUriPart())
-                url.addPathSegment(genreFilter.toUriPart().lowercase())
-            } else {
-                throw Exception("Please select a section or category")
+            (if (filters.isEmpty()) getFilterList() else filters).forEach { filter ->
+                when (filter) {
+                    is CategoryList -> {
+                        if (filter.state > 0) {
+                            val catQ = getCategoryList()[filter.state].query
+                            val catUrl = "$baseUrl/$catQ/?page=$page/"
+                            return GET(catUrl, headers)
+                        }
+                    }
+                    else -> {}
+                }
             }
-            url.addPathSegment("page")
-            url.addPathSegment("$page")
-            GET(url.toString(), headers)
+            return GET(baseUrl, headers)
         }
+        return GET(url, headers)
     }
+
+    override fun searchAnimeFromElement(element: Element) = popularAnimeFromElement(element)
+
+    override fun getFilterList() = AnimeFilterList(
+        CategoryList(categoriesName),
+    )
+
+    private class CategoryList(categories: Array<String>) :
+        AnimeFilter.Select<String>("الأقسام", categories)
+
+    private data class CatUnit(val name: String, val query: String)
+
+    private val categoriesName = getCategoryList().map { it.name }.toTypedArray()
+
+    private fun getCategoryList() = listOf(
+        CatUnit("اختر القسم", ""),
+        CatUnit("افلام اجنبى", "category/افلام-اجنبي"),
+        CatUnit("افلام اسلام الجيزاوى", "category/ترجمات-اسلام-الجيزاوي"),
+        CatUnit("افلام انمى", "category/افلام-كرتون"),
+        CatUnit("افلام تركيه", "category/افلام-تركية"),
+        CatUnit("افلام اسيويه", "category/افلام-اسيوية"),
+        CatUnit("افلام مدبلجة", "category/افلام-اجنبية-مدبلجة"),
+        CatUnit("سلاسل افلام", "assembly"),
+        CatUnit("مسلسلات اجنبية", "series-category/مسلسلات-اجنبي"),
+        CatUnit("مسلسلات انمى", "series-category/مسلسلات-انمي"),
+        CatUnit("مسلسلات تركية", "series-category/مسلسلات-تركية"),
+        CatUnit("مسلسلات اسيوىة", "series-category/مسلسلات-اسيوية"),
+        CatUnit("مسلسلات لاتينية", "series-category/مسلسلات-لاتينية"),
+        CatUnit("المسلسلات الكاملة", "serie"),
+        CatUnit("المواسم الكاملة", "season"),
+    )
 
     // =========================== Anime Details ============================
     override fun animeDetailsParse(document: Document): SAnime {
