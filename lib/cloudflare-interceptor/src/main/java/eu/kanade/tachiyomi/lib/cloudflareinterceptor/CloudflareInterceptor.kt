@@ -1,108 +1,181 @@
-package eu.kanade.tachiyomi.extension.vi.yurigarden
+package eu.kanade.tachiyomi.lib.cloudflareinterceptor
 
 import android.annotation.SuppressLint
 import android.app.Application
 import android.os.Handler
 import android.os.Looper
-import android.view.View
-import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import uy.kohesive.injekt.Injekt
+import okhttp3.Cookie
+import okhttp3.HttpUrl
+import okhttp3.Interceptor
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
 import uy.kohesive.injekt.api.get
+import uy.kohesive.injekt.injectLazy
+import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-/**
+class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
 
-Solves a Cloudflare Turnstile / challenge page by loading the target URL in a
+    private val context: Application by injectLazy()
+    private val handler by lazy { Handler(Looper.getMainLooper()) }
 
-hidden, fully-laid-out [WebView]. Turnstile fingerprints the rendering pipeline
+    @Synchronized
+    override fun intercept(chain: Interceptor.Chain): Response {
+        // FIX 1: استخدام originalRequest بدل إعادة بناء الطلب من chain.request()
+        val originalRequest = chain.request()
+        val originalResponse = chain.proceed(originalRequest)
 
-(screen/canvas size), so the view is forced to a realistic layout to let the
+        // إذا لم يكن Cloudflare هو السبب، أعد الرد كما هو
+        if (!isCloudflareChallenge(originalResponse)) {
+            return originalResponse
+        }
 
-invisible/managed widget auto-solve in most cases.
+        return try {
+            // FIX 2: إغلاق الرد الأصلي قبل المتابعة لتجنب تسريب الموارد
+            originalResponse.close()
+            val resolvedRequest = resolveWithWebView(originalRequest)
+            chain.proceed(resolvedRequest)
+        } catch (e: Exception) {
+            // OkHttp يدعم فقط IOExceptions في enqueue، لذا نغلّف الاستثناء
+            throw IOException("Cloudflare challenge failed for ${originalRequest.url}", e)
+        }
+    }
 
-On success the cf_clearance cookie is set in the shared [CookieManager], which
+    /** التحقق مما إذا كانت الاستجابة هي تحدي Cloudflare */
+    private fun isCloudflareChallenge(response: Response): Boolean {
+        return response.code in ERROR_CODES &&
+            response.header("Server") in SERVER_CHECK
+    }
 
-is picked up by the OkHttp cookie jar on subsequent requests.
-*/
-object CloudflareResolver {
+    class CloudflareJSI(private val latch: CountDownLatch) {
+        @JavascriptInterface
+        fun leave() = latch.countDown()
+    }
 
-private const val TIMEOUT_SECONDS = 45L
-private const val POLL_INTERVAL_MS = 500L
-private const val WEBVIEW_WIDTH = 1080
-private const val WEBVIEW_HEIGHT = 1920
-private const val CLEARANCE_COOKIE = "cf_clearance"
+    @SuppressLint("SetJavaScriptEnabled")
+    fun resolveWithWebView(request: Request): Request {
+        val latch = CountDownLatch(1)
+        val jsInterface = CloudflareJSI(latch)
 
-@Synchronized
-@SuppressLint("SetJavaScriptEnabled")
-fun resolve(loadUrl: String, cookieUrl: String = loadUrl, userAgent: String? = null): Boolean {
-val cookieManager = CookieManager.getInstance()
-if (hasClearance(cookieManager, cookieUrl)) return true
+        // FIX 3: استخدام @Volatile لضمان رؤية آمنة بين الخيوط
+        @Volatile var webView: WebView? = null
 
-val context = Injekt.get<Application>()  
- val handler = Handler(Looper.getMainLooper())  
- val latch = CountDownLatch(1)  
- var webView: WebView? = null  
- lateinit var poll: Runnable  
+        val origRequestUrl = request.url.toString()
+        val headers = request.headers
+            .toMultimap()
+            .mapValues { it.value.firstOrNull().orEmpty() }
+            .toMutableMap()
 
- handler.post {  
-     val wv = WebView(context)  
-     webView = wv  
+        handler.post {
+            val wv = WebView(context).also { webView = it }
+            wv.settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                databaseEnabled = true
+                useWideViewPort = true
+                loadWithOverviewMode = false
+                userAgentString = request.header("User-Agent") ?: DEFAULT_USER_AGENT
+            }
+            wv.addJavascriptInterface(jsInterface, "CloudflareJSI")
+            wv.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    view?.evaluateJavascript(CHECK_SCRIPT) {}
+                }
+            }
+            wv.loadUrl(origRequestUrl, headers)
+        }
 
-     wv.layoutParams = ViewGroup.LayoutParams(WEBVIEW_WIDTH, WEBVIEW_HEIGHT)  
-     wv.measure(  
-         View.MeasureSpec.makeMeasureSpec(WEBVIEW_WIDTH, View.MeasureSpec.EXACTLY),  
-         View.MeasureSpec.makeMeasureSpec(WEBVIEW_HEIGHT, View.MeasureSpec.EXACTLY),  
-     )  
-     wv.layout(0, 0, WEBVIEW_WIDTH, WEBVIEW_HEIGHT)  
+        // الانتظار حتى يتم حل التحدي أو انتهاء المهلة
+        latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)
 
-     with(wv.settings) {  
-         javaScriptEnabled = true  
-         domStorageEnabled = true  
-         databaseEnabled = true  
-         loadWithOverviewMode = true  
-         useWideViewPort = true  
-         blockNetworkImage = false  
-         mediaPlaybackRequiresUserGesture = false  
-         // cf_clearance is bound to the UA that solved it; keep both sides aligned.  
-         if (!userAgent.isNullOrBlank()) userAgentString = userAgent  
-     }  
+        // FIX 4: تنظيف WebView دائمًا حتى في حالة الاستثناء
+        handler.post {
+            webView?.run {
+                stopLoading()
+                destroy()
+            }
+            webView = null
+        }
 
-     cookieManager.setAcceptCookie(true)  
-     cookieManager.setAcceptThirdPartyCookies(wv, true)  
+        val cookies = parseCookiesFromWebView(request)
 
-     wv.webViewClient = WebViewClient()  
+        // FIX 5: حفظ جميع الكوكيز بـ استدعاء واحد فقط بدل حلقة
+        if (cookies.isNotEmpty()) {
+            val cookiesByDomain = cookies.groupBy { it.domain }
+            cookiesByDomain.forEach { (domain, domainCookies) ->
+                client.cookieJar.saveFromResponse(
+                    url = HttpUrl.Builder()
+                        .scheme("https")
+                        .host(domain)
+                        .build(),
+                    cookies = domainCookies,
+                )
+            }
+        }
 
-     poll = Runnable {  
-         if (latch.count == 0L) return@Runnable  
-         if (hasClearance(cookieManager, cookieUrl)) {  
-             latch.countDown()  
-         } else {  
-             handler.postDelayed(poll, POLL_INTERVAL_MS)  
-         }  
-     }  
+        return createRequestWithCookies(request, cookies)
+    }
 
-     wv.loadUrl(loadUrl)  
-     handler.postDelayed(poll, POLL_INTERVAL_MS)  
- }  
+    /** استخراج الكوكيز من WebView بشكل آمن */
+    private fun parseCookiesFromWebView(request: Request): List<Cookie> {
+        return CookieManager.getInstance()
+            ?.getCookie(request.url.toString())
+            ?.split(";")
+            ?.mapNotNull { Cookie.parse(request.url, it.trim()) }
+            ?: emptyList()
+    }
 
- latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)  
+    private fun createRequestWithCookies(request: Request, cookies: List<Cookie>): Request {
+        val matchingCookies = cookies.filter { it.matches(request.url) }
 
- handler.post {  
-     handler.removeCallbacks(poll)  
-     webView?.stopLoading()  
-     webView?.destroy()  
- }  
+        // الاحتفاظ بالكوكيز الموجودة التي لا تتعارض مع الكوكيز الجديدة
+        val existingCookies = Cookie.parseAll(request.url, request.headers)
+        val filteredExisting = existingCookies.filter { existing ->
+            matchingCookies.none { new -> new.name == existing.name }
+        }
 
- return hasClearance(cookieManager, cookieUrl)
+        val mergedCookies = filteredExisting + matchingCookies
+        return request.newBuilder()
+            .header("Cookie", mergedCookies.joinToString("; ") { "${it.name}=${it.value}" })
+            .build()
+    }
 
-}
+    companion object {
+        private val ERROR_CODES = listOf(403, 503)
+        private val SERVER_CHECK = arrayOf("cloudflare-nginx", "cloudflare")
 
-private fun hasClearance(cookieManager: CookieManager, url: String): Boolean {
-val cookies = cookieManager.getCookie(url) ?: return false
-return cookies.split(';').any { it.trim().startsWith("$CLEARANCE_COOKIE=") }
-}
+        private const val TIMEOUT_SECONDS = 30L
+
+        private const val DEFAULT_USER_AGENT =
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"
+
+        // FIX 6: CHECK_SCRIPT ثابت حقيقي — لا حاجة لـ lazy لأنه String بسيط
+        private const val CHECK_SCRIPT = """
+            setInterval(() => {
+                if (document.querySelector("#challenge-form") != null) {
+                    const simpleChallenge = document.querySelector(
+                        "#challenge-stage > div > input[type='button']"
+                    );
+                    if (simpleChallenge != null) simpleChallenge.click();
+
+                    const turnstile = document.querySelector("div.hcaptcha-box > iframe");
+                    if (turnstile != null) {
+                        const button = turnstile.contentWindow.document.querySelector(
+                            "input[type='checkbox']"
+                        );
+                        if (button != null) button.click();
+                    }
+                } else {
+                    CloudflareJSI.leave();
+                }
+            }, 2500);
+        """
+    }
 }
