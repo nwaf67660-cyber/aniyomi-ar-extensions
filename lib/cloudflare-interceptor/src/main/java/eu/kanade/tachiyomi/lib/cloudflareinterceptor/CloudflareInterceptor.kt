@@ -63,8 +63,8 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
         val latch = CountDownLatch(1)
         val jsInterface = CloudflareJSI(latch)
 
-        // FIX 3: استخدام @Volatile لضمان رؤية آمنة بين الخيوط
-        @Volatile var webView: WebView? = null
+        // FIX 3: استخدام متغير عادي بدل @Volatile (التي تكون للخصائص فقط)
+        var webView: WebView? = null
 
         val origRequestUrl = request.url.toString()
         val headers = request.headers
@@ -134,8 +134,21 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
     private fun createRequestWithCookies(request: Request, cookies: List<Cookie>): Request {
         val matchingCookies = cookies.filter { it.matches(request.url) }
 
-        // الاحتفاظ بالكوكيز الموجودة التي لا تتعارض مع الكوكيز الجديدة
-        val existingCookies = Cookie.parseAll(request.url, request.headers)
+        // FIX 6: تحليل الكوكيز يدويًا من Cookie header بدل استخدام Cookie.parseAll() غير الموجود
+        val existingCookies = request.header("Cookie")
+            ?.split(";")
+            ?.mapNotNull { cookieStr ->
+                val parts = cookieStr.trim().split("=", limit = 2)
+                if (parts.size == 2) {
+                    Cookie.Builder()
+                        .domain(request.url.host)
+                        .name(parts[0])
+                        .value(parts[1])
+                        .build()
+                } else null
+            }
+            ?: emptyList()
+
         val filteredExisting = existingCookies.filter { existing ->
             matchingCookies.none { new -> new.name == existing.name }
         }
@@ -156,8 +169,8 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"
 
-        // FIX 6: CHECK_SCRIPT ثابت حقيقي — لا حاجة لـ lazy لأنه String بسيط
-        private const val CHECK_SCRIPT = """
+        // val (not const) — multiline trimIndent strings cannot be const in Kotlin
+        private val CHECK_SCRIPT = """
             setInterval(() => {
                 if (document.querySelector("#challenge-form") != null) {
                     const simpleChallenge = document.querySelector(
@@ -176,6 +189,6 @@ class CloudflareInterceptor(private val client: OkHttpClient) : Interceptor {
                     CloudflareJSI.leave();
                 }
             }, 2500);
-        """
+        """.trimIndent()
     }
 }
