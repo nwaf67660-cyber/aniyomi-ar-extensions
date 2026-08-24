@@ -29,7 +29,8 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
 
     override val name = "فاصل اعلاني"
 
-    override val baseUrl = "https://www.faselhd.pro"
+    // تم تحديث الدومين للدومين الرسمي الحالي (canonical) بدل الدومين القديم faselhd.pro
+    override val baseUrl = "https://www.fasel-hd.cam"
 
     override val lang = "ar"
 
@@ -161,7 +162,15 @@ class FASELHD : ConfigurableAnimeSource, ParsedAnimeHttpSource() {
         val categoryFilter = filterList.find { it is CategoryFilter } as CategoryFilter
         val genreFilter = filterList.find { it is GenreFilter } as GenreFilter
         return if (query.isNotBlank()) {
-            GET("$baseUrl/page/$page?s=$query", headers)
+            // تم تصحيح بناء رابط البحث:
+            // الصفحة الأولى: baseUrl/?s=query
+            // باقي الصفحات: baseUrl/page/N/?s=query (بسلاش بعد الرقم، مطابق لسلوك الموقع الفعلي)
+            val url = if (page == 1) {
+                "$baseUrl/?s=$query"
+            } else {
+                "$baseUrl/page/$page/?s=$query"
+            }
+            GET(url, headers)
         } else {
             val url = "$baseUrl/".toHttpUrlOrNull()!!.newBuilder()
             if (sectionFilter.state != 0) {
